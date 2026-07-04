@@ -10,13 +10,20 @@ from typing import Any
 from config import Settings, get_settings
 from naver_api import NaverSportsClient, unwrap
 from parser import (
+    expected_batters_message,
+    find_previous_plate_event,
     format_preview,
-    format_relay_event,
-    important_events,
+    format_relay_event_with_context,
+    half_key,
+    has_starting_lineups,
     is_game_over,
+    is_kia_batter_event,
+    kia_half_summary_message,
+    lineup_media_items,
     parse_game_summary,
     parse_relay_events,
     player_photo_url,
+    should_send_relay_event,
     team_in_game,
 )
 from telegram import TelegramBot
@@ -83,6 +90,36 @@ def send_preview_once(
     save_state(settings.state_path, state)
 
 
+def send_lineup_once(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+    game_id: str,
+) -> None:
+    if state.get("lineupSentGameId") == game_id:
+        return
+
+    preview = unwrap(client.preview(game_id), "previewData")
+    if not has_starting_lineups(preview):
+        return
+
+    info = preview.get("gameInfo", {})
+    away_name = info.get("aName", "원정")
+    home_name = info.get("hName", "홈")
+    telegram.send_message(f"선발 라인업\n{away_name} vs {home_name}")
+
+    away_items = lineup_media_items(preview, "away")
+    home_items = lineup_media_items(preview, "home")
+    if away_items:
+        telegram.send_media_group(away_items)
+    if home_items:
+        telegram.send_media_group(home_items)
+
+    state["lineupSentGameId"] = game_id
+    save_state(settings.state_path, state)
+
+
 def process_relay(
     client: NaverSportsClient,
     telegram: TelegramBot,
@@ -91,6 +128,8 @@ def process_relay(
     game_id: str,
     away_name: str,
     home_name: str,
+    away_code: str,
+    home_code: str,
 ) -> bool:
     relay = unwrap(client.relay(game_id), "textRelayData")
     events = parse_relay_events(relay)
@@ -123,11 +162,42 @@ def process_relay(
         )
         return False
 
-    new_events = [event for event in important_events(events) if event.event_id > last_seq]
+    new_events = [event for event in events if event.event_id > last_seq]
+    sent_summaries = set(state.get("kiaHalfSummariesSent", []))
 
     for event in new_events:
-        message = format_relay_event(event, away_name, home_name)
-        photo = player_photo_url(event) if event.is_homer else None
+        if event.is_attack_start:
+            expected = expected_batters_message(event, relay, home_code, away_code, away_name, home_name, settings.team_code)
+            if expected:
+                telegram.send_message(expected)
+
+            summary_key = half_key(event)
+            if summary_key not in sent_summaries:
+                summary = kia_half_summary_message(
+                    events,
+                    relay,
+                    event,
+                    home_code,
+                    away_code,
+                    away_name,
+                    home_name,
+                    settings.team_code,
+                )
+                if summary:
+                    telegram.send_message(summary)
+                    sent_summaries.add(summary_key)
+            continue
+
+        if not should_send_relay_event(event, home_code, away_code, settings.team_code):
+            continue
+
+        previous_plate = find_previous_plate_event(events, event)
+        message = format_relay_event_with_context(event, away_name, home_name, previous_plate)
+        photo = None
+        if is_kia_batter_event(event, home_code, away_code, settings.team_code):
+            photo = player_photo_url(event)
+        elif event.is_score_event and previous_plate and is_kia_batter_event(previous_plate, home_code, away_code, settings.team_code):
+            photo = player_photo_url(previous_plate)
         if photo:
             telegram.send_photo(photo, message)
         else:
@@ -141,6 +211,7 @@ def process_relay(
             "homeScore": latest.home_score,
             "awayScore": latest.away_score,
             "lastRelaySeq": max(last_seq, max(event.event_id for event in events)),
+            "kiaHalfSummariesSent": sorted(sent_summaries),
             "updatedAt": datetime.now(settings.timezone).isoformat(),
         }
     )
@@ -183,6 +254,7 @@ def main() -> None:
                 continue
 
             send_preview_once(client, telegram, settings, state, summary.game_id)
+            send_lineup_once(client, telegram, settings, state, summary.game_id)
             game_over = process_relay(
                 client,
                 telegram,
@@ -191,6 +263,8 @@ def main() -> None:
                 summary.game_id,
                 summary.away_name or "원정",
                 summary.home_name or "홈",
+                summary.away_code,
+                summary.home_code,
             )
             if game_over and state.get("gameOverSentGameId") != summary.game_id:
                 telegram.send_message("경기 종료 알림을 확인했습니다. 오늘도 수고하셨습니다.")

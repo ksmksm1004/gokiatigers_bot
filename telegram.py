@@ -31,6 +31,21 @@ class TelegramBot:
             return
         self._post("sendPhoto", {"chat_id": self.chat_id, "photo": photo_url, "caption": caption})
 
+    def send_media_group(self, items: list[tuple[str, str]]) -> None:
+        if not items:
+            return
+        if self.dry_run:
+            for photo_url, caption in items:
+                logging.info("[DRY_RUN] Telegram media %s:\n%s", photo_url, caption)
+                print(f"{photo_url}\n{caption}")
+            return
+
+        media = [
+            {"type": "photo", "media": photo_url, "caption": caption}
+            for photo_url, caption in items[:10]
+        ]
+        self._post("sendMediaGroup", {"chat_id": self.chat_id, "media": media})
+
     def _post(self, method: str, payload: dict[str, Any]) -> None:
         response = self.session.post(f"{self.base_url}/{method}", json=payload, timeout=10)
         response.raise_for_status()
