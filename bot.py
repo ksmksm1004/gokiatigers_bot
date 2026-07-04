@@ -107,16 +107,35 @@ def send_lineup_once(
     info = preview.get("gameInfo", {})
     away_name = info.get("aName", "원정")
     home_name = info.get("hName", "홈")
-    telegram.send_message(f"선발 라인업\n{away_name} vs {home_name}")
 
-    away_items = lineup_media_items(preview, "away")
-    home_items = lineup_media_items(preview, "home")
-    if away_items:
-        telegram.send_media_group(away_items)
-    if home_items:
-        telegram.send_media_group(home_items)
+    if state.get("lineupHeaderSentGameId") != game_id:
+        state["lineupHeaderSentGameId"] = game_id
+        save_state(settings.state_path, state)
+        telegram.send_message(f"선발 라인업\n{away_name} vs {home_name}")
 
-    state["lineupSentGameId"] = game_id
+    for side, label in (("away", away_name), ("home", home_name)):
+        sent_key = f"lineup{side.title()}SentGameId"
+        attempted_key = f"lineup{side.title()}AttemptedGameId"
+        if state.get(sent_key) == game_id or state.get(attempted_key) == game_id:
+            continue
+
+        state[attempted_key] = game_id
+        save_state(settings.state_path, state)
+        items = lineup_media_items(preview, side)
+        if not items:
+            continue
+        try:
+            telegram.send_media_group(items)
+            state[sent_key] = game_id
+            save_state(settings.state_path, state)
+            logging.info("Sent %s lineup for %s.", label, game_id)
+        except Exception:
+            logging.exception("Failed to send %s lineup for %s. It will not be retried automatically.", label, game_id)
+
+    if state.get("lineupAwaySentGameId") == game_id and state.get("lineupHomeSentGameId") == game_id:
+        state["lineupSentGameId"] = game_id
+    else:
+        state["lineupSentGameId"] = game_id
     save_state(settings.state_path, state)
 
 
@@ -137,20 +156,9 @@ def process_relay(
         return False
 
     last_seq = int(state.get("lastRelaySeq") or 0)
+    sent_summaries = set(state.get("kiaHalfSummariesSent", []))
     if last_seq == 0 and not state.get("relayBootstrapped"):
         latest = events[-1]
-        state.update(
-            {
-                "gameId": game_id,
-                "inning": f"{latest.inning}회{latest.half}",
-                "homeScore": latest.home_score,
-                "awayScore": latest.away_score,
-                "lastRelaySeq": latest.event_id,
-                "relayBootstrapped": True,
-                "updatedAt": datetime.now(settings.timezone).isoformat(),
-            }
-        )
-        save_state(settings.state_path, state)
         telegram.send_message(
             "\n".join(
                 [
@@ -160,12 +168,81 @@ def process_relay(
                 ]
             )
         )
-        return False
+        bootstrap_events = [
+            event
+            for event in events
+            if event.inning == latest.inning and event.half == latest.half
+        ]
+        sent_summaries = dispatch_relay_events(
+            telegram,
+            settings,
+            relay,
+            events,
+            bootstrap_events,
+            sent_summaries,
+            away_name,
+            home_name,
+            away_code,
+            home_code,
+        )
+        state.update(
+            {
+                "gameId": game_id,
+                "inning": f"{latest.inning}회{latest.half}",
+                "homeScore": latest.home_score,
+                "awayScore": latest.away_score,
+                "lastRelaySeq": latest.event_id,
+                "relayBootstrapped": True,
+                "kiaHalfSummariesSent": sorted(sent_summaries),
+                "updatedAt": datetime.now(settings.timezone).isoformat(),
+            }
+        )
+        save_state(settings.state_path, state)
+        return is_game_over(events)
 
     new_events = [event for event in events if event.event_id > last_seq]
-    sent_summaries = set(state.get("kiaHalfSummariesSent", []))
+    sent_summaries = dispatch_relay_events(
+        telegram,
+        settings,
+        relay,
+        events,
+        new_events,
+        sent_summaries,
+        away_name,
+        home_name,
+        away_code,
+        home_code,
+    )
 
-    for event in new_events:
+    latest = events[-1]
+    state.update(
+        {
+            "gameId": game_id,
+            "inning": f"{latest.inning}회{latest.half}",
+            "homeScore": latest.home_score,
+            "awayScore": latest.away_score,
+            "lastRelaySeq": max(last_seq, max(event.event_id for event in events)),
+            "kiaHalfSummariesSent": sorted(sent_summaries),
+            "updatedAt": datetime.now(settings.timezone).isoformat(),
+        }
+    )
+    save_state(settings.state_path, state)
+    return is_game_over(events)
+
+
+def dispatch_relay_events(
+    telegram: TelegramBot,
+    settings: Settings,
+    relay: dict[str, Any],
+    all_events: list,
+    events_to_send: list,
+    sent_summaries: set,
+    away_name: str,
+    home_name: str,
+    away_code: str,
+    home_code: str,
+) -> set:
+    for event in events_to_send:
         if event.is_attack_start:
             expected = expected_batters_message(event, relay, home_code, away_code, away_name, home_name, settings.team_code)
             if expected:
@@ -174,7 +251,7 @@ def process_relay(
             summary_key = half_key(event)
             if summary_key not in sent_summaries:
                 summary = kia_half_summary_message(
-                    events,
+                    all_events,
                     relay,
                     event,
                     home_code,
@@ -191,7 +268,7 @@ def process_relay(
         if not should_send_relay_event(event, home_code, away_code, settings.team_code):
             continue
 
-        previous_plate = find_previous_plate_event(events, event)
+        previous_plate = find_previous_plate_event(all_events, event)
         message = format_relay_event_with_context(event, away_name, home_name, previous_plate)
         photo = None
         if is_kia_batter_event(event, home_code, away_code, settings.team_code):
@@ -202,21 +279,7 @@ def process_relay(
             telegram.send_photo(photo, message)
         else:
             telegram.send_message(message)
-
-    latest = events[-1]
-    state.update(
-        {
-            "gameId": game_id,
-            "inning": f"{latest.inning}회{latest.half}",
-            "homeScore": latest.home_score,
-            "awayScore": latest.away_score,
-            "lastRelaySeq": max(last_seq, max(event.event_id for event in events)),
-            "kiaHalfSummariesSent": sorted(sent_summaries),
-            "updatedAt": datetime.now(settings.timezone).isoformat(),
-        }
-    )
-    save_state(settings.state_path, state)
-    return is_game_over(events)
+    return sent_summaries
 
 
 def main() -> None:
@@ -254,7 +317,10 @@ def main() -> None:
                 continue
 
             send_preview_once(client, telegram, settings, state, summary.game_id)
-            send_lineup_once(client, telegram, settings, state, summary.game_id)
+            try:
+                send_lineup_once(client, telegram, settings, state, summary.game_id)
+            except Exception:
+                logging.exception("Lineup check failed. Continuing relay polling.")
             game_over = process_relay(
                 client,
                 telegram,
