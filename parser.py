@@ -320,6 +320,8 @@ def is_steal_event(event: RelayEvent) -> bool:
 def should_send_relay_event(event: RelayEvent, home_code: str, away_code: str, team_code: str = KIA_CODE) -> bool:
     if event.text == "투수 투수판 이탈":
         return False
+    if event.text.startswith("승리투수") or event.text.startswith("패전투수"):
+        return False
     if event.is_pitching_change or event.is_game_marker:
         return True
     if event.is_score_event:
@@ -384,13 +386,24 @@ def find_previous_plate_event(events: list[RelayEvent], event: RelayEvent) -> Re
     return None
 
 
+def relay_player_record(relay: dict[str, Any], event: RelayEvent) -> dict[str, Any]:
+    if not event.batter_code:
+        return {}
+    side = "home" if event.home_or_away == "1" else "away"
+    for player in relay.get(f"{side}Lineup", {}).get("batter", []):
+        if str(player.get("pcode")) == str(event.batter_code):
+            return player
+    return {}
+
+
 def format_relay_event_with_context(
     event: RelayEvent,
     away_name: str,
     home_name: str,
     previous_plate_event: RelayEvent | None = None,
+    player_record: dict[str, Any] | None = None,
 ) -> str:
-    text = format_relay_event(event, away_name, home_name)
+    text = format_relay_event(event, away_name, home_name, player_record)
     if event.is_score_event and previous_plate_event and previous_plate_event.text not in text:
         lines = text.splitlines()
         insert_at = 3 if len(lines) >= 3 else len(lines)
@@ -449,7 +462,12 @@ def half_key(event: RelayEvent) -> str:
     return f"{event.inning}{event.half}"
 
 
-def format_relay_event(event: RelayEvent, away_name: str, home_name: str) -> str:
+def format_relay_event(
+    event: RelayEvent,
+    away_name: str,
+    home_name: str,
+    player_record: dict[str, Any] | None = None,
+) -> str:
     prefix = "득점" if event.is_score_event else "교체" if event.is_pitching_change else "중계"
     lines = [
         f"{prefix} | {event.inning}회{event.half}",
@@ -457,7 +475,10 @@ def format_relay_event(event: RelayEvent, away_name: str, home_name: str) -> str
         event.text,
     ]
 
-    player = event.batter_record or event.player_info or {}
+    if event.is_game_marker or event.is_pitching_change:
+        return "\n".join(lines)
+
+    player = player_record or event.batter_record or event.player_info or {}
     stats = format_player_stats(player, event.player_name)
     if stats:
         lines += ["", stats]
@@ -484,6 +505,72 @@ def format_player_stats(player: dict[str, Any], fallback_name: str | None = None
         f"{player.get('sb', 0)}도루",
     ]
     return f"{name} | {prefix}" + " ".join(fields)
+
+
+def format_kia_record(record: dict[str, Any], team_code: str = KIA_CODE) -> str:
+    info = record.get("gameInfo", {})
+    side = "home" if info.get("hCode") == team_code else "away"
+    team_name = info.get("hName" if side == "home" else "aName", "KIA")
+    batters = record.get("battersBoxscore", {}).get(side, [])
+    pitchers = record.get("pitchersBoxscore", {}).get(side, [])
+    team_batting = record.get("battersBoxscore", {}).get(f"{side}Total", {})
+    team_pitching = record.get("teamPitchingBoxscore", {}).get(side, {})
+
+    lines = [
+        f"{team_name} 경기 기록",
+        f"타격 합계: {team_batting.get('ab', 0)}타수 {team_batting.get('run', 0)}득점 "
+        f"{team_batting.get('hit', 0)}안타 {team_batting.get('rbi', 0)}타점 "
+        f"{team_batting.get('hr', 0)}홈런 {team_batting.get('sb', 0)}도루",
+        "",
+        "타자",
+    ]
+
+    for player in batters:
+        order = player.get("batOrder", "-")
+        pos = player.get("pos", "")
+        lines.append(
+            f"{order}. {player.get('name', '-')} {pos} | 타율 {player.get('hra', '-')} | "
+            f"{player.get('ab', 0)}타수 {player.get('run', 0)}득점 {player.get('hit', 0)}안타 "
+            f"{player.get('rbi', 0)}타점 {player.get('hr', 0)}홈런 {player.get('bb', 0)}볼넷 "
+            f"{player.get('kk', 0)}삼진 {player.get('sb', 0)}도루"
+        )
+
+    lines += [
+        "",
+        f"투구 합계: {team_pitching.get('inn', '-')}이닝 {team_pitching.get('hit', 0)}피안타 "
+        f"{team_pitching.get('r', 0)}실점 {team_pitching.get('er', 0)}자책 "
+        f"{team_pitching.get('bbhp', 0)}사사구 {team_pitching.get('kk', 0)}삼진",
+        "",
+        "투수",
+    ]
+
+    for player in pitchers:
+        result = f" {player.get('wls')}" if player.get("wls") else ""
+        lines.append(
+            f"{player.get('name', '-')}{result} | {player.get('inn', '-')}이닝 "
+            f"{player.get('hit', 0)}피안타 {player.get('r', 0)}실점 {player.get('er', 0)}자책 "
+            f"{player.get('bbhp', 0)}사사구 {player.get('kk', 0)}삼진 ERA {player.get('era', '-')}"
+        )
+
+    return "\n".join(lines)
+
+
+def format_pitching_decisions(record: dict[str, Any], away_name: str, home_name: str, away_score: int, home_score: int) -> str:
+    pitchers = record.get("pitchersBoxscore", {})
+    by_result: dict[str, list[str]] = {"승": [], "패": [], "세": []}
+    for side in ("away", "home"):
+        for player in pitchers.get(side, []):
+            result = player.get("wls")
+            if result == "승":
+                by_result["승"].append(f"승리투수: {player.get('name', '-')}")
+            elif result == "패":
+                by_result["패"].append(f"패전투수: {player.get('name', '-')}")
+            elif result == "세":
+                by_result["세"].append(f"세이브: {player.get('name', '-')}")
+    decisions = by_result["승"] + by_result["패"] + by_result["세"]
+    if not decisions:
+        return ""
+    return "\n".join(["중계 | 경기종료", f"{away_name} {away_score} : {home_score} {home_name}", *decisions])
 
 
 def player_photo_url(event: RelayEvent) -> str | None:

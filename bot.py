@@ -12,6 +12,8 @@ from naver_api import NaverSportsClient, unwrap
 from parser import (
     expected_batters_message,
     find_previous_plate_event,
+    format_kia_record,
+    format_pitching_decisions,
     format_preview,
     format_relay_event_with_context,
     half_key,
@@ -23,6 +25,7 @@ from parser import (
     parse_game_summary,
     parse_relay_events,
     player_photo_url,
+    relay_player_record,
     should_send_relay_event,
     team_in_game,
 )
@@ -73,6 +76,16 @@ def should_poll_game(summary, settings: Settings, now: datetime) -> bool:
     else:
         start_at = summary.start_at.astimezone(settings.timezone)
     return start_at - timedelta(minutes=settings.pregame_minutes) <= now <= start_at + timedelta(hours=5, minutes=settings.postgame_minutes)
+
+
+def is_before_game_start(summary, settings: Settings, now: datetime) -> bool:
+    if summary.start_at is None:
+        return False
+    if summary.start_at.tzinfo is None:
+        start_at = summary.start_at.replace(tzinfo=settings.timezone)
+    else:
+        start_at = summary.start_at.astimezone(settings.timezone)
+    return now < start_at
 
 
 def send_preview_once(
@@ -137,6 +150,37 @@ def send_lineup_once(
     else:
         state["lineupSentGameId"] = game_id
     save_state(settings.state_path, state)
+
+
+def send_lineup(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    game_id: str,
+) -> None:
+    preview = unwrap(client.preview(game_id), "previewData")
+    if not has_starting_lineups(preview):
+        telegram.send_message("아직 선발 라인업이 발표되지 않았습니다.")
+        return
+
+    info = preview.get("gameInfo", {})
+    away_name = info.get("aName", "원정")
+    home_name = info.get("hName", "홈")
+    telegram.send_message(f"선발 라인업\n{away_name} vs {home_name}")
+    for side in ("away", "home"):
+        items = lineup_media_items(preview, side)
+        if items:
+            telegram.send_media_group(items)
+            time.sleep(3)
+
+
+def send_kia_record(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    game_id: str,
+    team_code: str,
+) -> None:
+    record = unwrap(client.record(game_id), "recordData")
+    telegram.send_message(format_kia_record(record, team_code))
 
 
 def process_relay(
@@ -269,7 +313,8 @@ def dispatch_relay_events(
             continue
 
         previous_plate = find_previous_plate_event(all_events, event)
-        message = format_relay_event_with_context(event, away_name, home_name, previous_plate)
+        player_record = relay_player_record(relay, event)
+        message = format_relay_event_with_context(event, away_name, home_name, previous_plate, player_record)
         photo = None
         if is_kia_batter_event(event, home_code, away_code, settings.team_code):
             photo = player_photo_url(event)
@@ -280,6 +325,65 @@ def dispatch_relay_events(
         else:
             telegram.send_message(message)
     return sent_summaries
+
+
+def handle_telegram_commands(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+    game_id: str,
+) -> None:
+    offset = state.get("telegramUpdateOffset")
+    updates = telegram.get_updates(offset)
+    if not updates:
+        return
+
+    if offset is None:
+        state["telegramUpdateOffset"] = max(int(update["update_id"]) for update in updates) + 1
+        save_state(settings.state_path, state)
+        return
+
+    for update in updates:
+        state["telegramUpdateOffset"] = max(int(state.get("telegramUpdateOffset") or 0), int(update["update_id"]) + 1)
+        message = update.get("message") or update.get("channel_post") or {}
+        chat = message.get("chat", {})
+        if str(chat.get("id")) != str(settings.telegram_chat_id):
+            continue
+        text = str(message.get("text") or "").strip()
+        command = text.split()[0].split("@")[0] if text else ""
+        try:
+            if command == "/라인업":
+                send_lineup(client, telegram, game_id)
+            elif command == "/기록":
+                send_kia_record(client, telegram, game_id, settings.team_code)
+        except Exception:
+            logging.exception("Telegram command failed: %s", command)
+            telegram.send_message("명령 처리 중 오류가 발생했습니다. logs/bot.log를 확인해주세요.")
+
+    save_state(settings.state_path, state)
+
+
+def send_game_end_record_once(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+    game_id: str,
+    away_name: str,
+    home_name: str,
+    away_score: int,
+    home_score: int,
+) -> None:
+    if state.get("recordSentGameId") == game_id:
+        return
+    record = unwrap(client.record(game_id), "recordData")
+    decisions = format_pitching_decisions(record, away_name, home_name, away_score, home_score)
+    if decisions:
+        telegram.send_message(decisions)
+    telegram.send_message(format_kia_record(record, settings.team_code))
+    state["recordSentGameId"] = game_id
+    save_state(settings.state_path, state)
 
 
 def main() -> None:
@@ -316,11 +420,13 @@ def main() -> None:
                 time.sleep(settings.idle_poll_seconds)
                 continue
 
+            handle_telegram_commands(client, telegram, settings, state, summary.game_id)
             send_preview_once(client, telegram, settings, state, summary.game_id)
-            try:
-                send_lineup_once(client, telegram, settings, state, summary.game_id)
-            except Exception:
-                logging.exception("Lineup check failed. Continuing relay polling.")
+            if is_before_game_start(summary, settings, now):
+                try:
+                    send_lineup_once(client, telegram, settings, state, summary.game_id)
+                except Exception:
+                    logging.exception("Lineup check failed. Continuing relay polling.")
             game_over = process_relay(
                 client,
                 telegram,
@@ -333,6 +439,17 @@ def main() -> None:
                 summary.home_code,
             )
             if game_over and state.get("gameOverSentGameId") != summary.game_id:
+                send_game_end_record_once(
+                    client,
+                    telegram,
+                    settings,
+                    state,
+                    summary.game_id,
+                    summary.away_name or "원정",
+                    summary.home_name or "홈",
+                    int(state.get("awayScore") or 0),
+                    int(state.get("homeScore") or 0),
+                )
                 telegram.send_message("경기 종료 알림을 확인했습니다. 오늘도 수고하셨습니다.")
                 state["gameOverSentGameId"] = summary.game_id
                 save_state(settings.state_path, state)

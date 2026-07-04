@@ -40,6 +40,9 @@ class NaverSportsClient:
         params = {"inning": inning} if inning else None
         return self.get_json(f"/schedule/games/{game_id}/relay", params=params)
 
+    def record(self, game_id: str) -> dict[str, Any]:
+        return self.get_json(f"/schedule/games/{game_id}/record")
+
     def games_on(self, day: date) -> list[dict[str, Any]]:
         ymd = day.strftime("%Y-%m-%d")
         compact = day.strftime("%Y%m%d")

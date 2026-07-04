@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import requests
@@ -46,6 +47,28 @@ class TelegramBot:
         ]
         self._post("sendMediaGroup", {"chat_id": self.chat_id, "media": media})
 
+    def get_updates(self, offset: int | None = None) -> list[dict[str, Any]]:
+        if self.dry_run:
+            return []
+        payload: dict[str, Any] = {"timeout": 0}
+        if offset is not None:
+            payload["offset"] = offset
+        response = self.session.get(f"{self.base_url}/getUpdates", params=payload, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok"):
+            return []
+        return data.get("result", [])
+
     def _post(self, method: str, payload: dict[str, Any]) -> None:
         response = self.session.post(f"{self.base_url}/{method}", json=payload, timeout=10)
+        if response.status_code == 429:
+            retry_after = 3
+            try:
+                retry_after = int(response.json().get("parameters", {}).get("retry_after", retry_after))
+            except (TypeError, ValueError):
+                retry_after = 3
+            logging.warning("Telegram rate limited on %s. Retrying after %ss.", method, retry_after)
+            time.sleep(min(retry_after + 1, 65))
+            response = self.session.post(f"{self.base_url}/{method}", json=payload, timeout=10)
         response.raise_for_status()
