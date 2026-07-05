@@ -598,12 +598,11 @@ def format_team_rankings(rankings: dict[str, Any], last_ten: dict[str, Any]) -> 
         rank = row.get("ranking", "-")
         name = row.get("teamName", "-")
         lines.append(
-            f"{rank}. {name} | 승률 {_fmt_avg(row.get('wra'))} | "
-            f"{row.get('gameBehind', '-')}G | "
+            f"{rank}. {name} | "
             f"{row.get('winGameCount', 0)}승 {row.get('drawnGameCount', 0)}무 {row.get('loseGameCount', 0)}패 | "
+            f"{row.get('gameBehind', '-')}G | "
             f"{row.get('continuousGameResult', '-')} | "
-            f"타율 {_fmt_avg(row.get('offenseHra'))} ERA {_fmt_avg(row.get('defenseEra'))} | "
-            f"최근10 {recent_by_team.get(team_id, '-')}"
+            f"{recent_by_team.get(team_id, '-')}"
         )
     return "\n".join(lines)
 
