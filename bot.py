@@ -12,9 +12,11 @@ from naver_api import NaverSportsClient, unwrap
 from parser import (
     expected_batters_message,
     find_previous_plate_event,
+    format_game_highlights,
     format_kia_record,
     format_pitching_decisions,
     format_preview,
+    format_team_rankings,
     format_relay_event_with_context,
     half_key,
     has_starting_lineups,
@@ -68,6 +70,55 @@ def find_today_kia_game(client: NaverSportsClient, settings: Settings, now: date
     return None
 
 
+def get_cached_today_game(
+    client: NaverSportsClient,
+    settings: Settings,
+    state: dict[str, Any],
+    now: datetime,
+) -> dict[str, Any] | None:
+    today = now.date().isoformat()
+    if state.get("scheduleDate") == today and state.get("scheduledGame"):
+        return state["scheduledGame"]
+
+    next_check = _parse_dt(state.get("nextScheduleCheckAt"))
+    if state.get("scheduleDate") == today and next_check and now < next_check:
+        return None
+
+    game = find_today_kia_game(client, settings, now)
+    state["scheduleDate"] = today
+    if game:
+        state["scheduledGame"] = game
+        state.pop("nextScheduleCheckAt", None)
+    else:
+        state.pop("scheduledGame", None)
+        state["nextScheduleCheckAt"] = (now + timedelta(seconds=settings.schedule_check_seconds)).isoformat()
+    save_state(settings.state_path, state)
+    return game
+
+
+def get_detailed_game(
+    client: NaverSportsClient,
+    settings: Settings,
+    state: dict[str, Any],
+    game: dict[str, Any],
+) -> dict[str, Any]:
+    game_id = str(game.get("gameId") or "")
+    if not game_id:
+        return game
+    cached = state.get("detailedGame")
+    if state.get("detailedGameId") == game_id and cached:
+        return cached
+    if settings.naver_game_id:
+        return game
+    preview = unwrap(client.preview(game_id), "previewData")
+    detail = preview.get("gameInfo", {}).copy()
+    detail["gameId"] = game_id
+    state["detailedGameId"] = game_id
+    state["detailedGame"] = detail
+    save_state(settings.state_path, state)
+    return detail
+
+
 def should_poll_game(summary, settings: Settings, now: datetime) -> bool:
     if summary.start_at is None:
         return True
@@ -78,6 +129,17 @@ def should_poll_game(summary, settings: Settings, now: datetime) -> bool:
     return start_at - timedelta(minutes=settings.pregame_minutes) <= now <= start_at + timedelta(hours=5, minutes=settings.postgame_minutes)
 
 
+def seconds_until_pregame(summary, settings: Settings, now: datetime) -> int:
+    if summary.start_at is None:
+        return settings.idle_poll_seconds
+    if summary.start_at.tzinfo is None:
+        start_at = summary.start_at.replace(tzinfo=settings.timezone)
+    else:
+        start_at = summary.start_at.astimezone(settings.timezone)
+    seconds = int((start_at - timedelta(minutes=settings.pregame_minutes) - now).total_seconds())
+    return max(seconds, settings.idle_poll_seconds)
+
+
 def is_before_game_start(summary, settings: Settings, now: datetime) -> bool:
     if summary.start_at is None:
         return False
@@ -86,6 +148,16 @@ def is_before_game_start(summary, settings: Settings, now: datetime) -> bool:
     else:
         start_at = summary.start_at.astimezone(settings.timezone)
     return now < start_at
+
+
+def is_after_game_start(summary, settings: Settings, now: datetime) -> bool:
+    if summary.start_at is None:
+        return True
+    if summary.start_at.tzinfo is None:
+        start_at = summary.start_at.replace(tzinfo=settings.timezone)
+    else:
+        start_at = summary.start_at.astimezone(settings.timezone)
+    return now >= start_at
 
 
 def send_preview_once(
@@ -181,6 +253,17 @@ def send_kia_record(
 ) -> None:
     record = unwrap(client.record(game_id), "recordData")
     telegram.send_message(format_kia_record(record, team_code))
+
+
+def send_team_rankings(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+) -> None:
+    now = datetime.now(settings.timezone)
+    rankings = unwrap(client.team_rankings(now.year), "seasonTeamStats")
+    last_ten = unwrap(client.last_ten_games(now.year), "seasonTeamLastTenGameStats")
+    telegram.send_message(format_team_rankings({"seasonTeamStats": rankings}, {"seasonTeamLastTenGameStats": last_ten}))
 
 
 def process_relay(
@@ -357,6 +440,8 @@ def handle_telegram_commands(
                 send_lineup(client, telegram, game_id)
             elif command == "/기록":
                 send_kia_record(client, telegram, game_id, settings.team_code)
+            elif command == "/순위":
+                send_team_rankings(client, telegram, settings)
         except Exception:
             logging.exception("Telegram command failed: %s", command)
             telegram.send_message("명령 처리 중 오류가 발생했습니다. logs/bot.log를 확인해주세요.")
@@ -378,12 +463,40 @@ def send_game_end_record_once(
     if state.get("recordSentGameId") == game_id:
         return
     record = unwrap(client.record(game_id), "recordData")
+    highlights = format_game_highlights(record, settings.team_code)
+    if highlights:
+        telegram.send_message(highlights)
     decisions = format_pitching_decisions(record, away_name, home_name, away_score, home_score)
     if decisions:
         telegram.send_message(decisions)
     telegram.send_message(format_kia_record(record, settings.team_code))
+    send_team_rankings_once(client, telegram, settings, state, game_id)
     state["recordSentGameId"] = game_id
     save_state(settings.state_path, state)
+
+
+def send_team_rankings_once(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+    game_id: str,
+) -> None:
+    if state.get("rankingSentGameId") == game_id:
+        return
+    send_team_rankings(client, telegram, settings)
+    state["rankingSentGameId"] = game_id
+    save_state(settings.state_path, state)
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed
 
 
 def main() -> None:
@@ -398,26 +511,39 @@ def main() -> None:
     while True:
         try:
             now = datetime.now(settings.timezone)
-            game = find_today_kia_game(client, settings, now)
+            game = get_cached_today_game(client, settings, state, now)
 
             if not game:
-                logging.info("No KIA game found today. Sleeping %ss.", settings.idle_poll_seconds)
-                time.sleep(settings.idle_poll_seconds)
+                next_check = _parse_dt(state.get("nextScheduleCheckAt"))
+                sleep_seconds = settings.schedule_check_seconds
+                if next_check:
+                    sleep_seconds = max(60, int((next_check - now).total_seconds()))
+                logging.info("No KIA game found today. Sleeping %ss.", sleep_seconds)
+                time.sleep(sleep_seconds)
                 continue
 
-            summary = parse_game_summary(game, settings.naver_game_id)
+            detailed_game = get_detailed_game(client, settings, state, game)
+            summary = parse_game_summary(detailed_game, settings.naver_game_id)
             if not summary.game_id:
                 logging.warning("KIA game found but gameId is missing: %s", game)
                 time.sleep(settings.idle_poll_seconds)
                 continue
 
             if state.get("gameId") != summary.game_id:
-                state = {"gameId": summary.game_id}
+                state = {
+                    "gameId": summary.game_id,
+                    "scheduleDate": state.get("scheduleDate"),
+                    "scheduledGame": state.get("scheduledGame"),
+                    "detailedGameId": state.get("detailedGameId"),
+                    "detailedGame": state.get("detailedGame"),
+                    "telegramUpdateOffset": state.get("telegramUpdateOffset"),
+                }
                 save_state(settings.state_path, state)
 
             if not should_poll_game(summary, settings, now):
-                logging.info("KIA game %s is outside polling window. Sleeping.", summary.game_id)
-                time.sleep(settings.idle_poll_seconds)
+                sleep_seconds = seconds_until_pregame(summary, settings, now)
+                logging.info("KIA game %s is outside polling window. Sleeping %ss.", summary.game_id, sleep_seconds)
+                time.sleep(sleep_seconds)
                 continue
 
             handle_telegram_commands(client, telegram, settings, state, summary.game_id)
@@ -427,6 +553,13 @@ def main() -> None:
                     send_lineup_once(client, telegram, settings, state, summary.game_id)
                 except Exception:
                     logging.exception("Lineup check failed. Continuing relay polling.")
+                time.sleep(settings.pregame_poll_seconds)
+                continue
+
+            if not is_after_game_start(summary, settings, now):
+                time.sleep(settings.pregame_poll_seconds)
+                continue
+
             game_over = process_relay(
                 client,
                 telegram,
@@ -454,6 +587,9 @@ def main() -> None:
                 state["gameOverSentGameId"] = summary.game_id
                 save_state(settings.state_path, state)
                 time.sleep(settings.idle_poll_seconds)
+            elif game_over:
+                logging.info("Game %s already ended. Sleeping %ss.", summary.game_id, settings.schedule_check_seconds)
+                time.sleep(settings.schedule_check_seconds)
             else:
                 time.sleep(settings.poll_seconds)
 

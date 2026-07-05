@@ -38,6 +38,8 @@ class Settings:
     timezone: ZoneInfo = ZoneInfo("Asia/Seoul")
     poll_seconds: int = 5
     idle_poll_seconds: int = 300
+    schedule_check_seconds: int = 21600
+    pregame_poll_seconds: int = 300
     pregame_minutes: int = 60
     postgame_minutes: int = 30
     naver_game_id: str | None = None
@@ -62,6 +64,8 @@ def get_settings() -> Settings:
         team_code=os.getenv("TEAM_CODE", "HT"),
         poll_seconds=env_int("POLL_SECONDS", 5),
         idle_poll_seconds=env_int("IDLE_POLL_SECONDS", 300),
+        schedule_check_seconds=env_int("SCHEDULE_CHECK_SECONDS", 21600),
+        pregame_poll_seconds=env_int("PREGAME_POLL_SECONDS", 300),
         pregame_minutes=env_int("PREGAME_MINUTES", 60),
         postgame_minutes=env_int("POSTGAME_MINUTES", 30),
         naver_game_id=os.getenv("NAVER_GAME_ID") or None,

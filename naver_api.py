@@ -43,7 +43,33 @@ class NaverSportsClient:
     def record(self, game_id: str) -> dict[str, Any]:
         return self.get_json(f"/schedule/games/{game_id}/record")
 
+    def calendar(self, day: date) -> dict[str, Any]:
+        return self.get_json(
+            "/schedule/calendar",
+            params={
+                "upperCategoryId": "kbaseball",
+                "categoryIds": ",kbo,kbaseballetc,kbs,premier12,apbc",
+                "date": day.strftime("%Y-%m-%d"),
+            },
+        )
+
+    def team_rankings(self, season: int) -> dict[str, Any]:
+        return self.get_json(
+            f"/statistics/categories/kbo/seasons/{season}/teams",
+            params={"gameType": "REGULAR_SEASON"},
+        )
+
+    def last_ten_games(self, season: int) -> dict[str, Any]:
+        return self.get_json(
+            f"/statistics/categories/kbo/seasons/{season}/teams/last-ten-games",
+            params={"sortField": "lastTenGameResult"},
+        )
+
     def games_on(self, day: date) -> list[dict[str, Any]]:
+        calendar_games = find_calendar_game_dicts(self.calendar(day), day)
+        if calendar_games:
+            return calendar_games
+
         ymd = day.strftime("%Y-%m-%d")
         compact = day.strftime("%Y%m%d")
         candidates = [
@@ -84,6 +110,29 @@ def find_game_dicts(value: Any) -> list[dict[str, Any]]:
     for game in games:
         unique[str(game["gameId"])] = game
     return list(unique.values())
+
+
+def find_calendar_game_dicts(value: Any, day: date) -> list[dict[str, Any]]:
+    result = value.get("result", value) if isinstance(value, dict) else {}
+    selected = day.strftime("%Y-%m-%d")
+    games: list[dict[str, Any]] = []
+    for date_info in result.get("dates", []):
+        if date_info.get("ymd") != selected:
+            continue
+        for game in date_info.get("gameInfos", []):
+            if not game.get("homeTeamCode") or not game.get("awayTeamCode"):
+                continue
+            games.append(
+                {
+                    "gameId": game.get("gameId"),
+                    "homeTeamCode": game.get("homeTeamCode"),
+                    "awayTeamCode": game.get("awayTeamCode"),
+                    "statusCode": game.get("statusCode"),
+                    "winner": game.get("winner"),
+                    "gameDate": selected,
+                }
+            )
+    return games
 
 
 def unwrap(data: dict[str, Any], key: str) -> dict[str, Any]:

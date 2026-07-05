@@ -555,6 +555,59 @@ def format_kia_record(record: dict[str, Any], team_code: str = KIA_CODE) -> str:
     return "\n".join(lines)
 
 
+def format_game_highlights(record: dict[str, Any], team_code: str = KIA_CODE) -> str:
+    info = record.get("gameInfo", {})
+    away = info.get("aName", "원정")
+    home = info.get("hName", "홈")
+    highlights = []
+
+    for item in record.get("etcRecords", []):
+        how = item.get("how")
+        result = item.get("result")
+        if how and result:
+            highlights.append(f"{how}: {result}")
+
+    side = "home" if info.get("hCode") == team_code else "away"
+    batters = record.get("battersBoxscore", {}).get(side, [])
+    top_hitters = sorted(
+        (p for p in batters if _to_int(p.get("hit")) > 0),
+        key=lambda p: (_to_int(p.get("hit")), _to_int(p.get("rbi")), _to_int(p.get("run"))),
+        reverse=True,
+    )[:3]
+    for player in top_hitters:
+        highlights.append(
+            f"{player.get('name')}: {player.get('hit', 0)}안타 "
+            f"{player.get('rbi', 0)}타점 {player.get('run', 0)}득점"
+        )
+
+    if not highlights:
+        return ""
+    return "\n".join([f"경기 하이라이트 | {away} vs {home}", *highlights[:8]])
+
+
+def format_team_rankings(rankings: dict[str, Any], last_ten: dict[str, Any]) -> str:
+    ranking_rows = rankings.get("seasonTeamStats", [])
+    recent_by_team = {
+        row.get("teamId"): row.get("lastTenGameResult", "-")
+        for row in last_ten.get("seasonTeamLastTenGameStats", [])
+    }
+
+    lines = ["KBO 팀 순위"]
+    for row in sorted(ranking_rows, key=lambda item: _to_int(item.get("ranking"))):
+        team_id = row.get("teamId")
+        rank = row.get("ranking", "-")
+        name = row.get("teamName", "-")
+        lines.append(
+            f"{rank}. {name} | 승률 {_fmt_avg(row.get('wra'))} | "
+            f"{row.get('gameBehind', '-')}G | "
+            f"{row.get('winGameCount', 0)}승 {row.get('drawnGameCount', 0)}무 {row.get('loseGameCount', 0)}패 | "
+            f"{row.get('continuousGameResult', '-')} | "
+            f"타율 {_fmt_avg(row.get('offenseHra'))} ERA {_fmt_avg(row.get('defenseEra'))} | "
+            f"최근10 {recent_by_team.get(team_id, '-')}"
+        )
+    return "\n".join(lines)
+
+
 def format_pitching_decisions(record: dict[str, Any], away_name: str, home_name: str, away_score: int, home_score: int) -> str:
     pitchers = record.get("pitchersBoxscore", {})
     by_result: dict[str, list[str]] = {"승": [], "패": [], "세": []}
@@ -616,3 +669,13 @@ def _to_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _fmt_avg(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        if value < 1:
+            return f"{value:.3f}"
+        return f"{value:.2f}"
+    return str(value)
