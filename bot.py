@@ -101,12 +101,13 @@ def get_detailed_game(
     settings: Settings,
     state: dict[str, Any],
     game: dict[str, Any],
+    force: bool = False,
 ) -> dict[str, Any]:
     game_id = str(game.get("gameId") or "")
     if not game_id:
         return game
     cached = state.get("detailedGame")
-    if state.get("detailedGameId") == game_id and cached:
+    if not force and state.get("detailedGameId") == game_id and cached:
         return cached
     if settings.naver_game_id:
         return game
@@ -140,6 +141,16 @@ def seconds_until_pregame(summary, settings: Settings, now: datetime) -> int:
     return max(seconds, settings.idle_poll_seconds)
 
 
+def should_check_game_status(summary, settings: Settings, now: datetime) -> bool:
+    if summary.start_at is None:
+        return True
+    if summary.start_at.tzinfo is None:
+        start_at = summary.start_at.replace(tzinfo=settings.timezone)
+    else:
+        start_at = summary.start_at.astimezone(settings.timezone)
+    return now >= start_at - timedelta(minutes=settings.pregame_minutes)
+
+
 def is_before_game_start(summary, settings: Settings, now: datetime) -> bool:
     if summary.start_at is None:
         return False
@@ -158,6 +169,36 @@ def is_after_game_start(summary, settings: Settings, now: datetime) -> bool:
     else:
         start_at = summary.start_at.astimezone(settings.timezone)
     return now >= start_at
+
+
+def is_cancelled_game(game: dict[str, Any]) -> bool:
+    cancel_flag = str(game.get("cancelFlag") or "").upper()
+    status = str(game.get("statusCode") or "").upper()
+    return cancel_flag == "Y" or status in {"CANCEL", "CANCELED", "CANCELLED"}
+
+
+def send_cancelled_once(
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+    summary,
+    game: dict[str, Any],
+) -> None:
+    if state.get("cancelSentGameId") == summary.game_id:
+        return
+    reason = "우천취소" if str(game.get("cancelFlag") or "").upper() == "Y" else "경기취소"
+    lines = [
+        "KIA 경기 취소",
+        f"{summary.away_name or game.get('aName', '원정')} vs {summary.home_name or game.get('hName', '홈')}",
+        f"{summary.stadium or game.get('stadium', '')} {reason}".strip(),
+    ]
+    telegram.send_message("\n".join(line for line in lines if line))
+    state["cancelSentGameId"] = summary.game_id
+    state["gameCancelled"] = True
+    cancelled_ids = set(state.get("cancelledGameIds", []))
+    cancelled_ids.add(summary.game_id)
+    state["cancelledGameIds"] = sorted(cancelled_ids)
+    save_state(settings.state_path, state)
 
 
 def send_preview_once(
@@ -470,7 +511,6 @@ def send_game_end_record_once(
     if decisions:
         telegram.send_message(decisions)
     telegram.send_message(format_kia_record(record, settings.team_code))
-    send_team_rankings_once(client, telegram, settings, state, game_id)
     state["recordSentGameId"] = game_id
     save_state(settings.state_path, state)
 
@@ -489,6 +529,50 @@ def send_team_rankings_once(
     save_state(settings.state_path, state)
 
 
+def send_daily_rankings_if_all_games_done(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+    now: datetime,
+) -> bool:
+    today = now.date().isoformat()
+    if state.get("dailyRankingSentDate") == today:
+        return True
+
+    next_check = _parse_dt(state.get("nextDailyRankingCheckAt"))
+    if next_check and now < next_check:
+        return False
+
+    games = client.games_on(now.date())
+    if not games:
+        state["nextDailyRankingCheckAt"] = (now + timedelta(seconds=settings.schedule_check_seconds)).isoformat()
+        save_state(settings.state_path, state)
+        return False
+
+    cancelled_ids = set(state.get("cancelledGameIds", []))
+    pending = [game for game in games if not is_terminal_game(game, cancelled_ids)]
+    if pending:
+        state["nextDailyRankingCheckAt"] = (now + timedelta(seconds=settings.idle_poll_seconds)).isoformat()
+        save_state(settings.state_path, state)
+        logging.info("Daily rankings pending. Unfinished games: %s", [game.get("gameId") for game in pending])
+        return False
+
+    send_team_rankings(client, telegram, settings)
+    state["dailyRankingSentDate"] = today
+    state.pop("nextDailyRankingCheckAt", None)
+    save_state(settings.state_path, state)
+    return True
+
+
+def is_terminal_game(game: dict[str, Any], cancelled_ids: set[str]) -> bool:
+    game_id = str(game.get("gameId") or "")
+    status = str(game.get("statusCode") or "").upper()
+    if game_id in cancelled_ids:
+        return True
+    return status in {"RESULT", "CANCEL", "CANCELED", "CANCELLED"}
+
+
 def _parse_dt(value: Any) -> datetime | None:
     if not value:
         return None
@@ -497,6 +581,17 @@ def _parse_dt(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed
+
+
+def seconds_until_next_due(now: datetime, default_seconds: int, *iso_values: Any) -> int:
+    candidates = []
+    for value in iso_values:
+        parsed = _parse_dt(value)
+        if parsed:
+            candidates.append(max(60, int((parsed - now).total_seconds())))
+    if not candidates:
+        return default_seconds
+    return min([default_seconds, *candidates])
 
 
 def main() -> None:
@@ -514,10 +609,13 @@ def main() -> None:
             game = get_cached_today_game(client, settings, state, now)
 
             if not game:
-                next_check = _parse_dt(state.get("nextScheduleCheckAt"))
-                sleep_seconds = settings.schedule_check_seconds
-                if next_check:
-                    sleep_seconds = max(60, int((next_check - now).total_seconds()))
+                send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
+                sleep_seconds = seconds_until_next_due(
+                    now,
+                    settings.schedule_check_seconds,
+                    state.get("nextScheduleCheckAt"),
+                    state.get("nextDailyRankingCheckAt"),
+                )
                 logging.info("No KIA game found today. Sleeping %ss.", sleep_seconds)
                 time.sleep(sleep_seconds)
                 continue
@@ -540,7 +638,17 @@ def main() -> None:
                 }
                 save_state(settings.state_path, state)
 
+            if should_check_game_status(summary, settings, now):
+                detailed_game = get_detailed_game(client, settings, state, game, force=True)
+                summary = parse_game_summary(detailed_game, settings.naver_game_id)
+                if is_cancelled_game(detailed_game):
+                    send_cancelled_once(telegram, settings, state, summary, detailed_game)
+                    send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
+                    time.sleep(settings.idle_poll_seconds)
+                    continue
+
             if not should_poll_game(summary, settings, now):
+                send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                 sleep_seconds = seconds_until_pregame(summary, settings, now)
                 logging.info("KIA game %s is outside polling window. Sleeping %ss.", summary.game_id, sleep_seconds)
                 time.sleep(sleep_seconds)
@@ -586,10 +694,17 @@ def main() -> None:
                 telegram.send_message("경기 종료 알림을 확인했습니다. 오늘도 수고하셨습니다.")
                 state["gameOverSentGameId"] = summary.game_id
                 save_state(settings.state_path, state)
+                send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                 time.sleep(settings.idle_poll_seconds)
             elif game_over:
-                logging.info("Game %s already ended. Sleeping %ss.", summary.game_id, settings.schedule_check_seconds)
-                time.sleep(settings.schedule_check_seconds)
+                send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
+                sleep_seconds = seconds_until_next_due(
+                    now,
+                    settings.schedule_check_seconds,
+                    state.get("nextDailyRankingCheckAt"),
+                )
+                logging.info("Game %s already ended. Sleeping %ss.", summary.game_id, sleep_seconds)
+                time.sleep(sleep_seconds)
             else:
                 time.sleep(settings.poll_seconds)
 
