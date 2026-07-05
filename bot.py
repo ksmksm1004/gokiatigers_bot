@@ -456,7 +456,7 @@ def handle_telegram_commands(
     telegram: TelegramBot,
     settings: Settings,
     state: dict[str, Any],
-    game_id: str,
+    game_id: str | None,
 ) -> None:
     offset = state.get("telegramUpdateOffset")
     updates = telegram.get_updates(offset)
@@ -478,8 +478,14 @@ def handle_telegram_commands(
         command = text.split()[0].split("@")[0] if text else ""
         try:
             if command == "/라인업":
+                if not game_id:
+                    telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
+                    continue
                 send_lineup(client, telegram, game_id)
             elif command == "/기록":
+                if not game_id:
+                    telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
+                    continue
                 send_kia_record(client, telegram, game_id, settings.team_code)
             elif command == "/순위":
                 send_team_rankings(client, telegram, settings)
@@ -632,6 +638,7 @@ def main() -> None:
     while True:
         try:
             now = datetime.now(settings.timezone)
+            handle_telegram_commands(client, telegram, settings, state, state.get("gameId"))
             game = get_cached_today_game(client, settings, state, now)
 
             if not game:
@@ -643,7 +650,7 @@ def main() -> None:
                     state.get("nextDailyRankingCheckAt"),
                 )
                 logging.info("No KIA game found today. Sleeping %ss.", sleep_seconds)
-                time.sleep(sleep_seconds)
+                time.sleep(min(sleep_seconds, 60))
                 continue
 
             detailed_game = get_detailed_game(client, settings, state, game)
@@ -673,7 +680,7 @@ def main() -> None:
                 if is_cancelled_game(detailed_game):
                     send_cancelled_once(telegram, settings, state, summary, detailed_game)
                     send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
-                    time.sleep(settings.idle_poll_seconds)
+                    time.sleep(min(settings.idle_poll_seconds, 60))
                     continue
 
             if not should_poll_game(summary, settings, now):
@@ -683,7 +690,6 @@ def main() -> None:
                 time.sleep(sleep_seconds)
                 continue
 
-            handle_telegram_commands(client, telegram, settings, state, summary.game_id)
             send_preview_once(client, telegram, settings, state, summary.game_id)
             if is_before_game_start(summary, settings, now):
                 try:
@@ -724,7 +730,7 @@ def main() -> None:
                 state["gameOverSentGameId"] = summary.game_id
                 save_state(settings.state_path, state)
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
-                time.sleep(settings.idle_poll_seconds)
+                time.sleep(min(settings.idle_poll_seconds, 60))
             elif game_over:
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                 sleep_seconds = seconds_until_next_due(
@@ -733,7 +739,7 @@ def main() -> None:
                     state.get("nextDailyRankingCheckAt"),
                 )
                 logging.info("Game %s already ended. Sleeping %ss.", summary.game_id, sleep_seconds)
-                time.sleep(sleep_seconds)
+                time.sleep(min(sleep_seconds, 60))
             else:
                 time.sleep(settings.poll_seconds)
 
