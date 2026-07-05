@@ -550,7 +550,7 @@ def send_daily_rankings_if_all_games_done(
         save_state(settings.state_path, state)
         return False
 
-    cancelled_ids = set(state.get("cancelledGameIds", []))
+    cancelled_ids = refresh_cancelled_games(client, state, games)
     pending = [game for game in games if not is_terminal_game(game, cancelled_ids)]
     if pending:
         state["nextDailyRankingCheckAt"] = (now + timedelta(seconds=settings.idle_poll_seconds)).isoformat()
@@ -570,7 +570,33 @@ def is_terminal_game(game: dict[str, Any], cancelled_ids: set[str]) -> bool:
     status = str(game.get("statusCode") or "").upper()
     if game_id in cancelled_ids:
         return True
-    return status in {"RESULT", "CANCEL", "CANCELED", "CANCELLED"}
+    return status in {"RESULT", "END", "CANCEL", "CANCELED", "CANCELLED"}
+
+
+def refresh_cancelled_games(
+    client: NaverSportsClient,
+    state: dict[str, Any],
+    games: list[dict[str, Any]],
+) -> set[str]:
+    cancelled_ids = set(state.get("cancelledGameIds", []))
+    changed = False
+    for game in games:
+        game_id = str(game.get("gameId") or "")
+        if not game_id or is_terminal_game(game, cancelled_ids):
+            continue
+        try:
+            preview = unwrap(client.preview(game_id), "previewData")
+        except Exception:
+            logging.exception("Failed to inspect pending game %s for cancellation.", game_id)
+            continue
+        game_info = preview.get("gameInfo", {})
+        if is_cancelled_game(game_info):
+            cancelled_ids.add(game_id)
+            changed = True
+            logging.info("Marked cancelled game %s while checking daily rankings.", game_id)
+    if changed:
+        state["cancelledGameIds"] = sorted(cancelled_ids)
+    return cancelled_ids
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -635,6 +661,9 @@ def main() -> None:
                     "detailedGameId": state.get("detailedGameId"),
                     "detailedGame": state.get("detailedGame"),
                     "telegramUpdateOffset": state.get("telegramUpdateOffset"),
+                    "cancelledGameIds": state.get("cancelledGameIds", []),
+                    "dailyRankingSentDate": state.get("dailyRankingSentDate"),
+                    "nextDailyRankingCheckAt": state.get("nextDailyRankingCheckAt"),
                 }
                 save_state(settings.state_path, state)
 
