@@ -42,6 +42,7 @@ BOT_COMMANDS = [
     ("/순위", "KBO 팀 순위 확인"),
     ("/rank", "KBO 팀 순위 확인"),
     ("/gg", "오늘 경기 중계 중단 후 종료 결과만 받기"),
+    ("/re", "중단한 오늘 경기 중계 재개"),
     ("/도움말", "사용 가능한 명령어 보기"),
     ("/help", "사용 가능한 명령어 보기"),
 ]
@@ -51,6 +52,7 @@ TELEGRAM_MENU_COMMANDS = [
     ("/record", "오늘 KIA 경기 기록 확인"),
     ("/rank", "KBO 팀 순위 확인"),
     ("/gg", "오늘 경기 중계 중단"),
+    ("/re", "오늘 경기 중계 재개"),
     ("/help", "사용 가능한 명령어 보기"),
 ]
 
@@ -371,7 +373,7 @@ def send_lineup(
 ) -> None:
     preview = unwrap(client.preview(game_id), "previewData")
     if not has_starting_lineups(preview):
-        telegram.send_message("아직 선발 라인업이 발표되지 않았습니다.")
+        telegram.send_message("라인업 발표 전입니다.")
         return
 
     info = preview.get("gameInfo", {})
@@ -412,6 +414,29 @@ def command_help_message() -> str:
     return "\n".join(lines)
 
 
+def command_game_detail(
+    client: NaverSportsClient,
+    settings: Settings,
+    state: dict[str, Any],
+    game_id: str,
+) -> tuple[Any, dict[str, Any]]:
+    preview = unwrap(client.preview(game_id), "previewData")
+    detail = preview.get("gameInfo", {}).copy()
+    detail["gameId"] = game_id
+    state["detailedGameId"] = game_id
+    state["detailedGame"] = detail
+    save_state(settings.state_path, state)
+    return parse_game_summary(detail, settings.naver_game_id), detail
+
+
+def command_game_phase(summary, detail: dict[str, Any], settings: Settings, now: datetime) -> str:
+    if is_terminal_game(detail, set()):
+        return "ended"
+    if is_before_game_start(summary, settings, now):
+        return "before"
+    return "live"
+
+
 def stop_relay_for_game(
     telegram: TelegramBot,
     settings: Settings,
@@ -424,6 +449,42 @@ def stop_relay_for_game(
     state["relayStoppedGameId"] = game_id
     save_state(settings.state_path, state)
     telegram.send_message("GG 선언 접수. 오늘 경기 중계는 여기서 멈추고, 경기 종료 후 결과와 순위만 보내겠습니다.")
+
+
+def resume_relay_for_game(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+    game_id: str,
+) -> None:
+    if state.get("relayStoppedGameId") != game_id:
+        telegram.send_message("현재 중단된 중계가 없습니다.")
+        return
+
+    try:
+        relay = unwrap(client.relay(game_id), "textRelayData")
+        events = parse_relay_events(relay)
+    except Exception:
+        logging.exception("Failed to align relay sequence while resuming %s.", game_id)
+        telegram.send_message("중계 재개 준비 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
+        return
+
+    if events:
+        latest = events[-1]
+        state.update(
+            {
+                "inning": f"{latest.inning}회{latest.half}",
+                "homeScore": latest.home_score,
+                "awayScore": latest.away_score,
+                "lastRelaySeq": latest.event_id,
+                "relayBootstrapped": True,
+                "updatedAt": datetime.now(settings.timezone).isoformat(),
+            }
+        )
+    state.pop("relayStoppedGameId", None)
+    save_state(settings.state_path, state)
+    telegram.send_message("중계 재개합니다. 지금 이후 새 소식부터 보내겠습니다.")
 
 
 def process_relay(
@@ -612,7 +673,28 @@ def handle_telegram_commands(
                 if not game_id:
                     telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
                     continue
+                summary, detail = command_game_detail(client, settings, state, game_id)
+                phase = command_game_phase(summary, detail, settings, datetime.now(settings.timezone))
+                if phase == "before":
+                    telegram.send_message("경기 시작 전입니다.")
+                    continue
+                if phase == "ended":
+                    telegram.send_message("경기가 끝났습니다.")
+                    continue
                 stop_relay_for_game(telegram, settings, state, game_id)
+            elif command == "/re":
+                if not game_id:
+                    telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
+                    continue
+                summary, detail = command_game_detail(client, settings, state, game_id)
+                phase = command_game_phase(summary, detail, settings, datetime.now(settings.timezone))
+                if phase == "before":
+                    telegram.send_message("경기 시작 전입니다.")
+                    continue
+                if phase == "ended":
+                    telegram.send_message("경기가 끝났습니다.")
+                    continue
+                resume_relay_for_game(client, telegram, settings, state, game_id)
             elif command in {"/도움말", "/명령어", "/help", "/start"}:
                 telegram.send_message(command_help_message())
         except Exception:
