@@ -1,7 +1,5 @@
 import unittest
 
-<<<<<<< HEAD
-=======
 from parser import (
     RelayEvent,
     expected_batters_message,
@@ -9,7 +7,6 @@ from parser import (
     format_relay_event,
     should_send_relay_event,
 )
->>>>>>> aff2c71 (fix: schedule, formatting, add video challenge)
 from parser import format_preview
 
 
@@ -58,9 +55,6 @@ class FormatPreviewTest(unittest.TestCase):
         self.assertIn("상대: 패 승 승 패 승", message)
         self.assertIn("KIA 6승 1무 2패", message)
 
-
-<<<<<<< HEAD
-=======
 class CompactBatterFormatTest(unittest.TestCase):
     def test_relay_batter_snapshot_uses_short_result_format(self):
         event = RelayEvent(
@@ -175,6 +169,5 @@ class CompactBatterFormatTest(unittest.TestCase):
         self.assertTrue(should_send_relay_event(event, "LT", "HT", "HT"))
 
 
->>>>>>> aff2c71 (fix: schedule, formatting, add video challenge)
 if __name__ == "__main__":
     unittest.main()

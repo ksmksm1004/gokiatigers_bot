@@ -34,6 +34,25 @@ from parser import (
 from telegram import TelegramBot
 
 
+BOT_COMMANDS = [
+    ("/라인업", "오늘 KIA 경기 선발 라인업 확인"),
+    ("/lineup", "오늘 KIA 경기 선발 라인업 확인"),
+    ("/기록", "오늘 KIA 경기 기록 확인"),
+    ("/record", "오늘 KIA 경기 기록 확인"),
+    ("/순위", "KBO 팀 순위 확인"),
+    ("/rank", "KBO 팀 순위 확인"),
+    ("/도움말", "사용 가능한 명령어 보기"),
+    ("/help", "사용 가능한 명령어 보기"),
+]
+
+TELEGRAM_MENU_COMMANDS = [
+    ("/lineup", "오늘 KIA 경기 선발 라인업 확인"),
+    ("/record", "오늘 KIA 경기 기록 확인"),
+    ("/rank", "KBO 팀 순위 확인"),
+    ("/help", "사용 가능한 명령어 보기"),
+]
+
+
 def setup_logging(settings: Settings) -> None:
     settings.log_path.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -54,6 +73,17 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     tmp_path = path.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp_path.replace(path)
+
+
+def current_game_id(state: dict[str, Any]) -> str | None:
+    if state.get("gameId"):
+        return str(state["gameId"])
+    scheduled = state.get("scheduledGame") or {}
+    if scheduled.get("gameId"):
+        return str(scheduled["gameId"])
+    if state.get("detailedGameId"):
+        return str(state["detailedGameId"])
+    return None
 
 
 def find_today_kia_game(client: NaverSportsClient, settings: Settings, now: datetime) -> dict[str, Any] | None:
@@ -209,10 +239,6 @@ def send_preview_once(
     game_id: str,
 ) -> bool:
     if state.get("previewSentGameId") == game_id:
-<<<<<<< HEAD
-        return
-    preview = unwrap(client.preview(game_id), "previewData")
-=======
         return True
     try:
         preview = unwrap(client.preview(game_id), "previewData")
@@ -226,7 +252,6 @@ def send_preview_once(
         save_state(settings.state_path, state)
         logging.info("Preview content is not ready for %s. Next check: %s", game_id, state["nextPreviewCheckAt"])
         return False
->>>>>>> aff2c71 (fix: schedule, formatting, add video challenge)
     telegram.send_message(format_preview(preview, game_id, settings.team_code))
     state["previewSentGameId"] = game_id
     state.pop("nextPreviewCheckAt", None)
@@ -361,6 +386,12 @@ def send_team_rankings(
     rankings = unwrap(client.team_rankings(now.year), "seasonTeamStats")
     last_ten = unwrap(client.last_ten_games(now.year), "seasonTeamLastTenGameStats")
     telegram.send_message(format_team_rankings({"seasonTeamStats": rankings}, {"seasonTeamLastTenGameStats": last_ten}))
+
+
+def command_help_message() -> str:
+    lines = ["사용 가능한 명령어"]
+    lines.extend(f"{command} - {description}" for command, description in BOT_COMMANDS)
+    return "\n".join(lines)
 
 
 def process_relay(
@@ -533,18 +564,20 @@ def handle_telegram_commands(
         text = str(message.get("text") or "").strip()
         command = text.split()[0].split("@")[0] if text else ""
         try:
-            if command == "/라인업":
+            if command in {"/라인업", "/lineup"}:
                 if not game_id:
                     telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
                     continue
                 send_lineup(client, telegram, game_id)
-            elif command == "/기록":
+            elif command in {"/기록", "/record"}:
                 if not game_id:
                     telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
                     continue
                 send_kia_record(client, telegram, game_id, settings.team_code)
-            elif command == "/순위":
+            elif command in {"/순위", "/rank"}:
                 send_team_rankings(client, telegram, settings)
+            elif command in {"/도움말", "/명령어", "/help", "/start"}:
+                telegram.send_message(command_help_message())
         except Exception:
             logging.exception("Telegram command failed: %s", command)
             telegram.send_message("명령 처리 중 오류가 발생했습니다. logs/bot.log를 확인해주세요.")
@@ -682,6 +715,21 @@ def seconds_until_next_due(now: datetime, default_seconds: int, *iso_values: Any
     return min([default_seconds, *candidates])
 
 
+def sleep_with_command_polling(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+    seconds: int,
+) -> None:
+    remaining = max(0, seconds)
+    while remaining > 0:
+        chunk = min(remaining, 5)
+        time.sleep(chunk)
+        remaining -= chunk
+        handle_telegram_commands(client, telegram, settings, state, current_game_id(state))
+
+
 def main() -> None:
     settings = get_settings()
     setup_logging(settings)
@@ -690,11 +738,15 @@ def main() -> None:
     state = load_state(settings.state_path)
 
     logging.info("KIA Telegram bot started. dry_run=%s", settings.dry_run)
+    try:
+        telegram.set_commands(TELEGRAM_MENU_COMMANDS)
+    except Exception:
+        logging.exception("Failed to register Telegram commands.")
 
     while True:
         try:
             now = datetime.now(settings.timezone)
-            handle_telegram_commands(client, telegram, settings, state, state.get("gameId"))
+            handle_telegram_commands(client, telegram, settings, state, current_game_id(state))
             game = get_cached_today_game(client, settings, state, now)
 
             if not game:
@@ -706,14 +758,14 @@ def main() -> None:
                     state.get("nextDailyRankingCheckAt"),
                 )
                 logging.info("No KIA game found today. Sleeping %ss.", sleep_seconds)
-                time.sleep(min(sleep_seconds, 60))
+                sleep_with_command_polling(client, telegram, settings, state, min(sleep_seconds, 60))
                 continue
 
             detailed_game = get_detailed_game(client, settings, state, game)
             summary = parse_game_summary(detailed_game, settings.naver_game_id)
             if not summary.game_id:
                 logging.warning("KIA game found but gameId is missing: %s", game)
-                time.sleep(settings.idle_poll_seconds)
+                sleep_with_command_polling(client, telegram, settings, state, min(settings.idle_poll_seconds, 60))
                 continue
 
             if state.get("gameId") != summary.game_id:
@@ -737,7 +789,7 @@ def main() -> None:
                 if is_cancelled_game(detailed_game):
                     send_cancelled_once(telegram, settings, state, summary, detailed_game)
                     send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
-                    time.sleep(min(settings.idle_poll_seconds, 60))
+                    sleep_with_command_polling(client, telegram, settings, state, min(settings.idle_poll_seconds, 60))
                     continue
 
             if not should_poll_game(summary, settings, now):
@@ -748,17 +800,14 @@ def main() -> None:
                     now,
                     seconds_until_pregame(summary, settings, now),
                     state.get("nextDailyRankingCheckAt"),
-<<<<<<< HEAD
-=======
                     state.get("nextPreviewCheckAt"),
->>>>>>> aff2c71 (fix: schedule, formatting, add video challenge)
                 )
                 logging.info(
                     "KIA game %s is outside polling window. Sleeping %ss.",
                     summary.game_id,
                     sleep_seconds,
                 )
-                time.sleep(min(sleep_seconds, 60))
+                sleep_with_command_polling(client, telegram, settings, state, min(sleep_seconds, 60))
                 continue
 
             if should_check_preview(state, summary.game_id, now):
@@ -768,11 +817,11 @@ def main() -> None:
                     send_lineup_once(client, telegram, settings, state, summary.game_id)
                 except Exception:
                     logging.exception("Lineup check failed. Continuing relay polling.")
-                time.sleep(settings.pregame_poll_seconds)
+                sleep_with_command_polling(client, telegram, settings, state, settings.pregame_poll_seconds)
                 continue
 
             if not is_after_game_start(summary, settings, now):
-                time.sleep(settings.pregame_poll_seconds)
+                sleep_with_command_polling(client, telegram, settings, state, settings.pregame_poll_seconds)
                 continue
 
             game_over = process_relay(
@@ -802,7 +851,7 @@ def main() -> None:
                 state["gameOverSentGameId"] = summary.game_id
                 save_state(settings.state_path, state)
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
-                time.sleep(min(settings.idle_poll_seconds, 60))
+                sleep_with_command_polling(client, telegram, settings, state, min(settings.idle_poll_seconds, 60))
             elif game_over:
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                 sleep_seconds = seconds_until_next_due(
@@ -811,16 +860,16 @@ def main() -> None:
                     state.get("nextDailyRankingCheckAt"),
                 )
                 logging.info("Game %s already ended. Sleeping %ss.", summary.game_id, sleep_seconds)
-                time.sleep(min(sleep_seconds, 60))
+                sleep_with_command_polling(client, telegram, settings, state, min(sleep_seconds, 60))
             else:
-                time.sleep(settings.poll_seconds)
+                sleep_with_command_polling(client, telegram, settings, state, settings.poll_seconds)
 
         except KeyboardInterrupt:
             logging.info("Stopped by user.")
             raise
         except Exception:
             logging.exception("Loop failed.")
-            time.sleep(min(settings.idle_poll_seconds, 60))
+            time.sleep(5)
 
 
 if __name__ == "__main__":

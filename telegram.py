@@ -47,6 +47,18 @@ class TelegramBot:
         ]
         self._post("sendMediaGroup", {"chat_id": self.chat_id, "media": media})
 
+    def set_commands(self, commands: list[tuple[str, str]]) -> None:
+        payload = {
+            "commands": [
+                {"command": command.lstrip("/"), "description": description}
+                for command, description in commands
+            ]
+        }
+        if self.dry_run:
+            logging.info("[DRY_RUN] Telegram commands: %s", payload["commands"])
+            return
+        self._post("setMyCommands", payload)
+
     def get_updates(self, offset: int | None = None) -> list[dict[str, Any]]:
         if self.dry_run:
             return []
