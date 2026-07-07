@@ -211,7 +211,7 @@ def send_preview_once(
     if state.get("previewSentGameId") == game_id:
         return
     preview = unwrap(client.preview(game_id), "previewData")
-    telegram.send_message(format_preview(preview, game_id))
+    telegram.send_message(format_preview(preview, game_id, settings.team_code))
     state["previewSentGameId"] = game_id
     save_state(settings.state_path, state)
 
@@ -685,9 +685,17 @@ def main() -> None:
 
             if not should_poll_game(summary, settings, now):
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
-                sleep_seconds = seconds_until_pregame(summary, settings, now)
-                logging.info("KIA game %s is outside polling window. Sleeping %ss.", summary.game_id, sleep_seconds)
-                time.sleep(sleep_seconds)
+                sleep_seconds = seconds_until_next_due(
+                    now,
+                    seconds_until_pregame(summary, settings, now),
+                    state.get("nextDailyRankingCheckAt"),
+                )
+                logging.info(
+                    "KIA game %s is outside polling window. Sleeping %ss.",
+                    summary.game_id,
+                    sleep_seconds,
+                )
+                time.sleep(min(sleep_seconds, 60))
                 continue
 
             send_preview_once(client, telegram, settings, state, summary.game_id)
