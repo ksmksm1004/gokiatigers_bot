@@ -111,7 +111,7 @@ def team_in_game(game: dict[str, Any], team_code: str) -> bool:
     return team_code in codes
 
 
-def format_preview(preview: dict[str, Any], game_id: str) -> str:
+def format_preview(preview: dict[str, Any], game_id: str, team_code: str = KIA_CODE) -> str:
     info = preview.get("gameInfo", {})
     away = info.get("aName", "원정")
     home = info.get("hName", "홈")
@@ -128,8 +128,8 @@ def format_preview(preview: dict[str, Any], game_id: str) -> str:
 
     lines += _standings_lines(preview)
     lines += _starter_lines(preview)
-    lines += _recent_lines(preview)
-    lines += _vs_lines(preview)
+    lines += _recent_lines(preview, team_code)
+    lines += _vs_lines(preview, team_code)
     lines.append("")
     lines.append(f"네이버 중계: https://m.sports.naver.com/game/{game_id}/relay")
     return "\n".join(line for line in lines if line is not None)
@@ -165,9 +165,23 @@ def _starter_lines(preview: dict[str, Any]) -> list[str]:
     return rows + [""] if len(rows) > 1 else []
 
 
-def _recent_lines(preview: dict[str, Any]) -> list[str]:
+def _team_side(preview: dict[str, Any], team_code: str) -> str | None:
+    info = preview.get("gameInfo", {})
+    if str(info.get("aCode") or info.get("awayTeamCode") or "") == team_code:
+        return "away"
+    if str(info.get("hCode") or info.get("homeTeamCode") or "") == team_code:
+        return "home"
+    return None
+
+
+def _recent_lines(preview: dict[str, Any], team_code: str = KIA_CODE) -> list[str]:
+    side = _team_side(preview, team_code)
+    key_pairs = {
+        "away": (("KIA", "awayTeamPreviousGames"), ("상대", "homeTeamPreviousGames")),
+        "home": (("KIA", "homeTeamPreviousGames"), ("상대", "awayTeamPreviousGames")),
+    }
     rows = ["최근 5경기"]
-    for label, key in (("KIA", "homeTeamPreviousGames"), ("상대", "awayTeamPreviousGames")):
+    for label, key in key_pairs.get(side, (("KIA", "homeTeamPreviousGames"), ("상대", "awayTeamPreviousGames"))):
         games = preview.get(key, [])[:5]
         if not games:
             continue
@@ -176,13 +190,16 @@ def _recent_lines(preview: dict[str, Any]) -> list[str]:
     return rows + [""] if len(rows) > 1 else []
 
 
-def _vs_lines(preview: dict[str, Any]) -> list[str]:
+def _vs_lines(preview: dict[str, Any], team_code: str = KIA_CODE) -> list[str]:
     vs = preview.get("seasonVsResult", {})
     if not vs:
         return []
+
+    side = _team_side(preview, team_code)
+    prefix = "a" if side == "away" else "h"
     return [
         "상대전적",
-        f"KIA {vs.get('hw', 0)}승 {vs.get('hd', 0)}무 {vs.get('hl', 0)}패",
+        f"KIA {vs.get(prefix + 'w', 0)}승 {vs.get(prefix + 'd', 0)}무 {vs.get(prefix + 'l', 0)}패",
         "",
     ]
 

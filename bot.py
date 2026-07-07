@@ -211,7 +211,7 @@ def send_preview_once(
     if state.get("previewSentGameId") == game_id:
         return
     preview = unwrap(client.preview(game_id), "previewData")
-    telegram.send_message(format_preview(preview, game_id))
+    telegram.send_message(format_preview(preview, game_id, settings.team_code))
     state["previewSentGameId"] = game_id
     save_state(settings.state_path, state)
 
