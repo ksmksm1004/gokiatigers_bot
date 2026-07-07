@@ -18,6 +18,8 @@ IMPORTANT_WORDS = (
     "선발",
     "승리투수",
     "패전투수",
+    "비디오 판독",
+    "비디오판독",
 )
 
 
@@ -339,6 +341,8 @@ def should_send_relay_event(event: RelayEvent, home_code: str, away_code: str, t
         return False
     if event.text.startswith("승리투수") or event.text.startswith("패전투수"):
         return False
+    if "비디오 판독" in event.text or "비디오판독" in event.text:
+        return True
     if event.is_pitching_change or event.is_game_marker:
         return True
     if event.is_score_event:
@@ -391,7 +395,7 @@ def expected_batters_message(
         f"{away_name} {event.away_score} : {event.home_score} {home_name}",
         f"{team_name} 예상 타자",
     ]
-    lines.extend(f"{p.get('name', '-')} | {p.get('ab', 0)}타수 {p.get('hit', 0)}안타" for p in expected)
+    lines.extend(format_batter_snapshot(p) for p in expected)
     return "\n".join(lines)
 
 
@@ -471,7 +475,7 @@ def kia_half_summary_message(
     for code in used_codes:
         player = lineup_by_code.get(str(code))
         if player:
-            lines.append(format_player_stats(player))
+            lines.append(format_batter_summary_stats(player))
     return "\n".join(line for line in lines if line)
 
 
@@ -496,32 +500,101 @@ def format_relay_event(
         return "\n".join(lines)
 
     player = player_record or event.batter_record or event.player_info or {}
-    stats = format_player_stats(player, event.player_name)
+    stats = format_batter_snapshot(player, event.player_name, event)
     if stats:
         lines += ["", stats]
     return "\n".join(lines)
 
 
-def format_player_stats(player: dict[str, Any], fallback_name: str | None = None) -> str:
+def format_batter_snapshot(
+    player: dict[str, Any],
+    fallback_name: str | None = None,
+    event: RelayEvent | None = None,
+) -> str:
     if not player:
         return ""
     name = player.get("name") or player.get("playerName") or fallback_name
     if not name:
         return ""
-    prefix = ""
-    if player.get("batOrder") and player.get("seasonHra") not in (None, ""):
-        prefix = f"{player.get('batOrder')}번타자 타율 {player.get('seasonHra', '-')}" + " | "
-    fields = [
-        f"{player.get('ab', 0)}타수",
-        f"{player.get('run', 0)}득점",
-        f"{player.get('hit', 0)}안타",
-        f"{player.get('rbi', 0)}타점",
-        f"{player.get('hr', 0)}홈런",
-        f"{player.get('bb', 0)}볼넷",
-        f"{player.get('so', player.get('kk', 0))}삼진",
-        f"{player.get('sb', 0)}도루",
+    parts = [
+        str(player.get("batOrder") or player.get("batorder") or "-"),
+        name,
+        "|",
+        _compact_avg(player.get("seasonHra", player.get("hra", "-"))),
+        "|",
+        f"{_to_int(player.get('hit'))}-{_to_int(player.get('ab'))}",
     ]
-    return f"{name} | {prefix}" + " ".join(fields)
+    result = _plate_result_label(event, player) if event else ""
+    if result:
+        parts += ["|", result]
+    return " ".join(parts)
+
+
+def format_batter_summary_stats(player: dict[str, Any], fallback_name: str | None = None) -> str:
+    if not player:
+        return ""
+    name = player.get("name") or player.get("playerName") or fallback_name
+    if not name:
+        return ""
+    fields = _nonzero_batter_fields(player)
+    base = f"{player.get('batOrder') or player.get('batorder') or '-'} {name} | {_compact_avg(player.get('seasonHra', player.get('hra', '-')))}"
+    if fields:
+        return f"{base} | {' '.join(fields)}"
+    return base
+
+
+def _nonzero_batter_fields(player: dict[str, Any]) -> list[str]:
+    pairs = [
+        ("ab", "타수"),
+        ("run", "득점"),
+        ("hit", "안타"),
+        ("rbi", "타점"),
+        ("hr", "홈런"),
+        ("bb", "볼넷"),
+        ("so", "삼진"),
+        ("kk", "삼진"),
+        ("sb", "도루"),
+    ]
+    fields: list[str] = []
+    seen_labels: set[str] = set()
+    for key, label in pairs:
+        if label in seen_labels:
+            continue
+        value = _to_int(player.get(key))
+        if value:
+            fields.append(f"{value}{label}")
+            seen_labels.add(label)
+    return fields
+
+
+def _plate_result_label(event: RelayEvent | None, player: dict[str, Any]) -> str:
+    if event is None:
+        return ""
+    text = event.text.split(":", 1)[1].strip() if ":" in event.text else event.text
+    label = ""
+    if "홈런" in text:
+        label = "홈런"
+    elif "3루타" in text:
+        label = "3루타"
+    elif "2루타" in text:
+        label = "땅볼 2루타" if "땅볼" in text else "2루타"
+    elif "1루타" in text or "안타" in text:
+        label = "안타"
+    elif "볼넷" in text or "고의4구" in text:
+        label = "볼넷"
+    elif "사구" in text or "몸에 맞는 볼" in text or "몸에맞는볼" in text:
+        label = "사구"
+    elif "희생플라이" in text:
+        label = "희생플라이"
+    elif "희생번트" in text:
+        label = "희생번트"
+    elif "도루" in text and "실패" not in text:
+        label = "도루"
+
+    rbi = _to_int(player.get("rbi"))
+    if label and rbi:
+        return f"{label}(타점{rbi})"
+    return label
 
 
 def format_kia_record(record: dict[str, Any], team_code: str = KIA_CODE) -> str:
@@ -535,39 +608,24 @@ def format_kia_record(record: dict[str, Any], team_code: str = KIA_CODE) -> str:
 
     lines = [
         f"{team_name} 경기 기록",
-        f"타격 합계: {team_batting.get('ab', 0)}타수 {team_batting.get('run', 0)}득점 "
-        f"{team_batting.get('hit', 0)}안타 {team_batting.get('rbi', 0)}타점 "
-        f"{team_batting.get('hr', 0)}홈런 {team_batting.get('sb', 0)}도루",
+        f"타격 합계: {' '.join(_nonzero_batter_fields(team_batting)) or '기록 없음'}",
         "",
         "타자",
     ]
 
     for player in batters:
-        order = player.get("batOrder", "-")
-        pos = player.get("pos", "")
-        lines.append(
-            f"{order}. {player.get('name', '-')} {pos} | 타율 {player.get('hra', '-')} | "
-            f"{player.get('ab', 0)}타수 {player.get('run', 0)}득점 {player.get('hit', 0)}안타 "
-            f"{player.get('rbi', 0)}타점 {player.get('hr', 0)}홈런 {player.get('bb', 0)}볼넷 "
-            f"{player.get('kk', 0)}삼진 {player.get('sb', 0)}도루"
-        )
+        lines.append(format_batter_summary_stats(player))
 
     lines += [
         "",
-        f"투구 합계: {team_pitching.get('inn', '-')}이닝 {team_pitching.get('hit', 0)}피안타 "
-        f"{team_pitching.get('r', 0)}실점 {team_pitching.get('er', 0)}자책 "
-        f"{team_pitching.get('bbhp', 0)}사사구 {team_pitching.get('kk', 0)}삼진",
+        f"투구 합계: {_pitcher_stats_text(team_pitching)}",
         "",
         "투수",
     ]
 
     for player in pitchers:
         result = f" {player.get('wls')}" if player.get("wls") else ""
-        lines.append(
-            f"{player.get('name', '-')}{result} | {player.get('inn', '-')}이닝 "
-            f"{player.get('hit', 0)}피안타 {player.get('r', 0)}실점 {player.get('er', 0)}자책 "
-            f"{player.get('bbhp', 0)}사사구 {player.get('kk', 0)}삼진 ERA {player.get('era', '-')}"
-        )
+        lines.append(f"{player.get('name', '-')}{result} | {_pitcher_stats_text(player)}")
 
     return "\n".join(lines)
 
@@ -592,10 +650,9 @@ def format_game_highlights(record: dict[str, Any], team_code: str = KIA_CODE) ->
         reverse=True,
     )[:3]
     for player in top_hitters:
-        highlights.append(
-            f"{player.get('name')}: {player.get('hit', 0)}안타 "
-            f"{player.get('rbi', 0)}타점 {player.get('run', 0)}득점"
-        )
+        stats = " ".join(_nonzero_batter_fields(player))
+        if stats:
+            highlights.append(f"{player.get('name')}: {stats}")
 
     if not highlights:
         return ""
@@ -695,3 +752,31 @@ def _fmt_avg(value: Any) -> str:
             return f"{value:.3f}"
         return f"{value:.2f}"
     return str(value)
+
+
+def _compact_avg(value: Any) -> str:
+    avg = _fmt_avg(value)
+    if avg.startswith("0."):
+        return avg[1:]
+    return avg
+
+
+def _pitcher_stats_text(player: dict[str, Any]) -> str:
+    fields = []
+    inn = player.get("inn")
+    if inn not in (None, "", "-"):
+        fields.append(f"{inn}이닝")
+    for key, label in (
+        ("hit", "피안타"),
+        ("r", "실점"),
+        ("er", "자책"),
+        ("bbhp", "사사구"),
+        ("kk", "삼진"),
+    ):
+        value = _to_int(player.get(key))
+        if value:
+            fields.append(f"{value}{label}")
+    era = player.get("era")
+    if era not in (None, ""):
+        fields.append(f"ERA {era}")
+    return " ".join(fields) or "기록 없음"

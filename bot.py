@@ -91,7 +91,7 @@ def get_cached_today_game(
         state.pop("nextScheduleCheckAt", None)
     else:
         state.pop("scheduledGame", None)
-        state["nextScheduleCheckAt"] = (now + timedelta(seconds=settings.schedule_check_seconds)).isoformat()
+        state["nextScheduleCheckAt"] = next_schedule_lookup_at(now).isoformat()
     save_state(settings.state_path, state)
     return game
 
@@ -207,13 +207,69 @@ def send_preview_once(
     settings: Settings,
     state: dict[str, Any],
     game_id: str,
-) -> None:
+) -> bool:
     if state.get("previewSentGameId") == game_id:
+<<<<<<< HEAD
         return
     preview = unwrap(client.preview(game_id), "previewData")
+=======
+        return True
+    try:
+        preview = unwrap(client.preview(game_id), "previewData")
+    except Exception:
+        state["nextPreviewCheckAt"] = next_hour_at(datetime.now(settings.timezone)).isoformat()
+        save_state(settings.state_path, state)
+        logging.exception("Preview check failed for %s. Will retry hourly.", game_id)
+        return False
+    if not has_preview_content(preview):
+        state["nextPreviewCheckAt"] = next_hour_at(datetime.now(settings.timezone)).isoformat()
+        save_state(settings.state_path, state)
+        logging.info("Preview content is not ready for %s. Next check: %s", game_id, state["nextPreviewCheckAt"])
+        return False
+>>>>>>> aff2c71 (fix: schedule, formatting, add video challenge)
     telegram.send_message(format_preview(preview, game_id, settings.team_code))
     state["previewSentGameId"] = game_id
+    state.pop("nextPreviewCheckAt", None)
     save_state(settings.state_path, state)
+    return True
+
+
+def has_preview_content(preview: dict[str, Any]) -> bool:
+    return any(
+        preview.get(key)
+        for key in (
+            "awayStandings",
+            "homeStandings",
+            "awayStarter",
+            "homeStarter",
+            "awayTeamPreviousGames",
+            "homeTeamPreviousGames",
+            "seasonVsResult",
+        )
+    )
+
+
+def next_hour_at(now: datetime) -> datetime:
+    base = now.replace(minute=0, second=0, microsecond=0)
+    if base <= now:
+        base += timedelta(hours=1)
+    return base
+
+
+def next_schedule_lookup_at(now: datetime) -> datetime:
+    for hour in (9, 12):
+        candidate = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if now < candidate:
+            return candidate
+    tomorrow = now + timedelta(days=1)
+    return tomorrow.replace(hour=9, minute=0, second=0, microsecond=0)
+
+
+def should_check_preview(state: dict[str, Any], game_id: str, now: datetime) -> bool:
+    if state.get("previewSentGameId") == game_id:
+        return False
+    next_check = _parse_dt(state.get("nextPreviewCheckAt"))
+    return next_check is None or now >= next_check
 
 
 def send_lineup_once(
@@ -671,6 +727,7 @@ def main() -> None:
                     "cancelledGameIds": state.get("cancelledGameIds", []),
                     "dailyRankingSentDate": state.get("dailyRankingSentDate"),
                     "nextDailyRankingCheckAt": state.get("nextDailyRankingCheckAt"),
+                    "nextPreviewCheckAt": state.get("nextPreviewCheckAt"),
                 }
                 save_state(settings.state_path, state)
 
@@ -684,11 +741,17 @@ def main() -> None:
                     continue
 
             if not should_poll_game(summary, settings, now):
+                if should_check_preview(state, summary.game_id, now):
+                    send_preview_once(client, telegram, settings, state, summary.game_id)
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                 sleep_seconds = seconds_until_next_due(
                     now,
                     seconds_until_pregame(summary, settings, now),
                     state.get("nextDailyRankingCheckAt"),
+<<<<<<< HEAD
+=======
+                    state.get("nextPreviewCheckAt"),
+>>>>>>> aff2c71 (fix: schedule, formatting, add video challenge)
                 )
                 logging.info(
                     "KIA game %s is outside polling window. Sleeping %ss.",
@@ -698,7 +761,8 @@ def main() -> None:
                 time.sleep(min(sleep_seconds, 60))
                 continue
 
-            send_preview_once(client, telegram, settings, state, summary.game_id)
+            if should_check_preview(state, summary.game_id, now):
+                send_preview_once(client, telegram, settings, state, summary.game_id)
             if is_before_game_start(summary, settings, now):
                 try:
                     send_lineup_once(client, telegram, settings, state, summary.game_id)
