@@ -2,6 +2,7 @@ import unittest
 
 from parser import (
     RelayEvent,
+    changed_pitcher_lines,
     expected_batters_message,
     format_batter_summary_stats,
     format_relay_event,
@@ -154,6 +155,96 @@ class CompactBatterFormatTest(unittest.TestCase):
         self.assertIn("6 박상준 | .303 | 0-0", message)
         self.assertIn("7 김선빈 | .248 | 0-0", message)
         self.assertIn("8 김규성 | .245 | 0-0", message)
+
+    def test_expected_batters_can_include_previous_kia_pitcher_stats(self):
+        event = RelayEvent(
+            event_id=1,
+            inning=3,
+            half="초",
+            text="3회초 KIA 공격",
+            home_score=1,
+            away_score=0,
+            batter_code="9",
+            home_or_away="0",
+        )
+        relay = {
+            "awayLineup": {
+                "batter": [
+                    {"pcode": "9", "name": "김규성", "batOrder": 9, "seasonHra": "0.245", "ab": 0, "hit": 0},
+                    {"pcode": "1", "name": "박재현", "batOrder": 1, "seasonHra": "0.280", "ab": 1, "hit": 0},
+                    {"pcode": "2", "name": "김호령", "batOrder": 2, "seasonHra": "0.283", "ab": 1, "hit": 1},
+                ],
+                "pitcher": [
+                    {
+                        "pcode": "50054",
+                        "name": "성영탁",
+                        "seqno": 2,
+                        "ballCount": 22,
+                        "inn": "0.2",
+                        "hit": 4,
+                        "run": 4,
+                        "er": 3,
+                        "bb": 1,
+                        "hbp": 0,
+                        "kk": 2,
+                        "seasonEra": "4.11",
+                    }
+                ],
+            }
+        }
+        previous = {
+            "50054": {
+                "name": "성영탁",
+                "seqno": 2,
+                "ballCount": 0,
+                "inn": "0",
+                "hit": 0,
+                "run": 0,
+                "er": 0,
+                "bb": 0,
+                "hbp": 0,
+                "kk": 0,
+                "seasonEra": "4.11",
+            }
+        }
+
+        pitcher_lines, snapshot = changed_pitcher_lines(relay, "away", previous)
+        message = expected_batters_message(event, relay, "LT", "HT", "KIA", "롯데", "HT", pitcher_lines)
+
+        self.assertEqual(
+            pitcher_lines,
+            ["성영탁 | 22개 | 0 ⅔이닝 4피안타 4실점 3자책 1사사구 2삼진 ERA 4.11"],
+        )
+        self.assertEqual(snapshot["50054"]["ballCount"], 22)
+        self.assertIn("9 김규성 | .245 | 0-0", message)
+        self.assertIn("\n\n성영탁 | 22개 | 0 ⅔이닝", message)
+
+    def test_first_kia_attack_only_stores_pitcher_snapshot(self):
+        relay = {
+            "awayLineup": {
+                "pitcher": [
+                    {
+                        "pcode": "50054",
+                        "name": "성영탁",
+                        "seqno": 2,
+                        "ballCount": 22,
+                        "inn": "0.2",
+                        "hit": 4,
+                        "run": 4,
+                        "er": 3,
+                        "bb": 1,
+                        "hbp": 0,
+                        "kk": 2,
+                        "seasonEra": "4.11",
+                    }
+                ]
+            }
+        }
+
+        pitcher_lines, snapshot = changed_pitcher_lines(relay, "away", None)
+
+        self.assertEqual(pitcher_lines, [])
+        self.assertEqual(snapshot["50054"]["inn"], "0.2")
 
     def test_video_review_is_sent_for_any_team(self):
         event = RelayEvent(

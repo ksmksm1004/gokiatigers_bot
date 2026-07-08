@@ -11,6 +11,7 @@ from config import Settings, get_settings
 from naver_api import NaverSportsClient, unwrap
 from naver_weather import NaverWeatherClient
 from parser import (
+    changed_pitcher_lines,
     expected_batters_message,
     find_previous_plate_event,
     format_game_highlights,
@@ -22,6 +23,7 @@ from parser import (
     half_key,
     has_starting_lineups,
     is_game_over,
+    is_kia_batting,
     is_kia_batter_event,
     kia_half_summary_message,
     lineup_media_items,
@@ -596,6 +598,7 @@ def process_relay(
         sent_summaries = dispatch_relay_events(
             telegram,
             settings,
+            state,
             relay,
             events,
             bootstrap_events,
@@ -624,6 +627,7 @@ def process_relay(
     sent_summaries = dispatch_relay_events(
         telegram,
         settings,
+        state,
         relay,
         events,
         new_events,
@@ -653,6 +657,7 @@ def process_relay(
 def dispatch_relay_events(
     telegram: TelegramBot,
     settings: Settings,
+    state: dict[str, Any],
     relay: dict[str, Any],
     all_events: list,
     events_to_send: list,
@@ -664,7 +669,25 @@ def dispatch_relay_events(
 ) -> set:
     for event in events_to_send:
         if event.is_attack_start:
-            expected = expected_batters_message(event, relay, home_code, away_code, away_name, home_name, settings.team_code)
+            pitcher_lines = []
+            if is_kia_batting(event, home_code, away_code, settings.team_code):
+                side = "home" if event.home_or_away == "1" else "away"
+                pitcher_lines, current_snapshot = changed_pitcher_lines(
+                    relay,
+                    side,
+                    state.get("lastKiaPitcherSnapshot"),
+                )
+                state["lastKiaPitcherSnapshot"] = current_snapshot
+            expected = expected_batters_message(
+                event,
+                relay,
+                home_code,
+                away_code,
+                away_name,
+                home_name,
+                settings.team_code,
+                pitcher_lines,
+            )
             if expected:
                 telegram.send_message(expected)
 

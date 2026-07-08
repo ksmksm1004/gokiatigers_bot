@@ -374,6 +374,7 @@ def expected_batters_message(
     away_name: str,
     home_name: str,
     team_code: str = KIA_CODE,
+    pitcher_lines: list[str] | None = None,
 ) -> str:
     if not is_kia_batting(event, home_code, away_code, team_code):
         return ""
@@ -396,7 +397,70 @@ def expected_batters_message(
         f"{team_name} 예상 타자",
     ]
     lines.extend(format_batter_snapshot(p) for p in expected)
+    if pitcher_lines:
+        lines += ["", *pitcher_lines]
     return "\n".join(lines)
+
+
+def pitcher_snapshot(relay: dict[str, Any], side: str) -> dict[str, dict[str, Any]]:
+    key = "homeLineup" if side == "home" else "awayLineup"
+    pitchers = relay.get(key, {}).get("pitcher", [])
+    result: dict[str, dict[str, Any]] = {}
+    for pitcher in pitchers:
+        code = str(pitcher.get("pcode") or "")
+        if not code:
+            continue
+        result[code] = {
+            "name": pitcher.get("name", "-"),
+            "ballCount": _to_int(pitcher.get("ballCount")),
+            "inn": str(pitcher.get("inn") or "0"),
+            "hit": _to_int(pitcher.get("hit")),
+            "run": _to_int(pitcher.get("run")),
+            "er": _to_int(pitcher.get("er")),
+            "bb": _to_int(pitcher.get("bb")),
+            "hbp": _to_int(pitcher.get("hbp")),
+            "kk": _to_int(pitcher.get("kk")),
+            "seasonEra": pitcher.get("seasonEra", "-"),
+            "seqno": _to_int(pitcher.get("seqno")),
+        }
+    return result
+
+
+def changed_pitcher_lines(
+    relay: dict[str, Any],
+    side: str,
+    previous_snapshot: dict[str, dict[str, Any]] | None,
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    current = pitcher_snapshot(relay, side)
+    if not previous_snapshot:
+        return [], current
+
+    changed = []
+    for code, pitcher in current.items():
+        previous = previous_snapshot.get(code, {})
+        if _pitcher_changed_since_snapshot(previous, pitcher):
+            changed.append(pitcher)
+    changed.sort(key=lambda pitcher: _to_int(pitcher.get("seqno")))
+    return [format_pitcher_snapshot(pitcher) for pitcher in changed], current
+
+
+def _pitcher_changed_since_snapshot(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+    keys = ("ballCount", "inn", "hit", "run", "er", "bb", "hbp", "kk")
+    return any(str(previous.get(key, 0)) != str(current.get(key, 0)) for key in keys)
+
+
+def format_pitcher_snapshot(pitcher: dict[str, Any]) -> str:
+    walk = _to_int(pitcher.get("bb")) + _to_int(pitcher.get("hbp"))
+    fields = [
+        f"{_format_innings(pitcher.get('inn'))}이닝",
+        f"{_to_int(pitcher.get('hit'))}피안타",
+        f"{_to_int(pitcher.get('run'))}실점",
+        f"{_to_int(pitcher.get('er'))}자책",
+        f"{walk}사사구",
+        f"{_to_int(pitcher.get('kk'))}삼진",
+        f"ERA {pitcher.get('seasonEra', '-')}",
+    ]
+    return f"{pitcher.get('name', '-')} | {_to_int(pitcher.get('ballCount'))}개 | " + " ".join(fields)
 
 
 def find_previous_plate_event(events: list[RelayEvent], event: RelayEvent) -> RelayEvent | None:
@@ -744,6 +808,15 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+def _format_innings(value: Any) -> str:
+    raw = str(value or "0")
+    if "." not in raw:
+        return raw
+    whole, fraction = raw.split(".", 1)
+    suffix = {"0": "", "1": " ⅓", "2": " ⅔"}.get(fraction[:1], f".{fraction}")
+    return f"{whole}{suffix}" if suffix else whole
+
+
 def _fmt_avg(value: Any) -> str:
     if value is None:
         return "-"
@@ -765,7 +838,7 @@ def _pitcher_stats_text(player: dict[str, Any]) -> str:
     fields = []
     inn = player.get("inn")
     if inn not in (None, "", "-"):
-        fields.append(f"{inn}이닝")
+        fields.append(f"{_format_innings(inn)}이닝")
     for key, label in (
         ("hit", "피안타"),
         ("r", "실점"),
