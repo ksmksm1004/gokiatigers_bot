@@ -110,6 +110,14 @@ def score_from_game(game: dict[str, Any], side: str) -> int:
     return 0
 
 
+def merge_game_status(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    merged = base.copy()
+    for key, value in update.items():
+        if value not in (None, ""):
+            merged[key] = value
+    return merged
+
+
 def find_today_kia_game(client: NaverSportsClient, settings: Settings, now: datetime) -> dict[str, Any] | None:
     if settings.naver_game_id:
         preview = unwrap(client.preview(settings.naver_game_id), "previewData")
@@ -398,6 +406,9 @@ def send_kia_record(
     team_code: str,
 ) -> None:
     record = unwrap(client.record(game_id), "recordData")
+    if not record:
+        telegram.send_message("경기 기록은 아직 제공되지 않았습니다.")
+        return
     telegram.send_message(format_kia_record(record, team_code))
 
 
@@ -740,10 +751,16 @@ def send_game_end_record_once(
     home_name: str,
     away_score: int,
     home_score: int,
-) -> None:
+) -> bool:
     if state.get("recordSentGameId") == game_id:
-        return
+        return True
     record = unwrap(client.record(game_id), "recordData")
+    if not record:
+        logging.info("Game record is not ready for %s. Will retry later.", game_id)
+        return False
+    record_info = record.get("gameInfo", {})
+    away_score = away_score or score_from_game(record_info, "away")
+    home_score = home_score or score_from_game(record_info, "home")
     highlights = format_game_highlights(record, settings.team_code)
     if highlights:
         telegram.send_message(highlights)
@@ -753,6 +770,32 @@ def send_game_end_record_once(
     telegram.send_message(format_kia_record(record, settings.team_code))
     state["recordSentGameId"] = game_id
     save_state(settings.state_path, state)
+    return True
+
+
+def refresh_game_status_from_schedule(
+    client: NaverSportsClient,
+    settings: Settings,
+    state: dict[str, Any],
+    summary,
+    detailed_game: dict[str, Any],
+    now: datetime,
+) -> dict[str, Any]:
+    try:
+        games = client.games_on(now.date())
+    except Exception:
+        logging.exception("Failed to refresh schedule status for %s.", summary.game_id)
+        return detailed_game
+    for game in games:
+        if str(game.get("gameId") or "") != summary.game_id:
+            continue
+        refreshed = merge_game_status(detailed_game, game)
+        state["detailedGameId"] = summary.game_id
+        state["detailedGame"] = refreshed
+        state["scheduledGame"] = merge_game_status(state.get("scheduledGame") or {}, game)
+        save_state(settings.state_path, state)
+        return refreshed
+    return detailed_game
 
 
 def finish_stopped_relay_game_if_done(
@@ -766,13 +809,11 @@ def finish_stopped_relay_game_if_done(
 ) -> bool:
     if state.get("relayStoppedGameId") != summary.game_id:
         return False
+    detailed_game = refresh_game_status_from_schedule(client, settings, state, summary, detailed_game, now)
     if not is_terminal_game(detailed_game, set(state.get("cancelledGameIds", []))):
-        logging.info("Relay stopped for %s by /gg. Waiting for final result.", summary.game_id)
-        return True
-    if state.get("gameOverSentGameId") != summary.game_id:
         away_score = score_from_game(detailed_game, "away") or int(state.get("awayScore") or 0)
         home_score = score_from_game(detailed_game, "home") or int(state.get("homeScore") or 0)
-        send_game_end_record_once(
+        record_sent = send_game_end_record_once(
             client,
             telegram,
             settings,
@@ -783,6 +824,27 @@ def finish_stopped_relay_game_if_done(
             away_score,
             home_score,
         )
+        if not record_sent:
+            logging.debug("Relay stopped for %s by /gg. Waiting for final result.", summary.game_id)
+            send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
+            return True
+    if state.get("gameOverSentGameId") != summary.game_id:
+        away_score = score_from_game(detailed_game, "away") or int(state.get("awayScore") or 0)
+        home_score = score_from_game(detailed_game, "home") or int(state.get("homeScore") or 0)
+        record_sent = send_game_end_record_once(
+            client,
+            telegram,
+            settings,
+            state,
+            summary.game_id,
+            summary.away_name or "원정",
+            summary.home_name or "홈",
+            away_score,
+            home_score,
+        )
+        if not record_sent:
+            send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
+            return True
         telegram.send_message("경기 종료 알림을 확인했습니다. 오늘도 수고하셨습니다.")
         state["gameOverSentGameId"] = summary.game_id
         save_state(settings.state_path, state)
@@ -830,7 +892,7 @@ def send_daily_rankings_if_all_games_done(
     if pending:
         state["nextDailyRankingCheckAt"] = (now + timedelta(seconds=settings.idle_poll_seconds)).isoformat()
         save_state(settings.state_path, state)
-        logging.info("Daily rankings pending. Unfinished games: %s", [game.get("gameId") for game in pending])
+        logging.debug("Daily rankings pending. Unfinished games: %s", [game.get("gameId") for game in pending])
         return False
 
     send_team_rankings(client, telegram, settings)
@@ -940,14 +1002,14 @@ def main() -> None:
                     state.get("nextDailyRankingCheckAt"),
                 )
                 logging.info("No KIA game found today. Sleeping %ss.", sleep_seconds)
-                sleep_with_command_polling(client, weather_client, telegram, settings, state, min(sleep_seconds, 60))
+                sleep_with_command_polling(client, weather_client, telegram, settings, state, sleep_seconds)
                 continue
 
             detailed_game = get_detailed_game(client, settings, state, game)
             summary = parse_game_summary(detailed_game, settings.naver_game_id)
             if not summary.game_id:
                 logging.warning("KIA game found but gameId is missing: %s", game)
-                sleep_with_command_polling(client, weather_client, telegram, settings, state, min(settings.idle_poll_seconds, 60))
+                sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.idle_poll_seconds)
                 continue
 
             if state.get("gameId") != summary.game_id:
@@ -972,29 +1034,31 @@ def main() -> None:
                 if is_cancelled_game(detailed_game):
                     send_cancelled_once(telegram, settings, state, summary, detailed_game)
                     send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
-                    sleep_with_command_polling(client, weather_client, telegram, settings, state, min(settings.idle_poll_seconds, 60))
+                    sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.idle_poll_seconds)
                     continue
 
             if not should_poll_game(summary, settings, now):
                 if state.get("relayStoppedGameId") != summary.game_id and should_check_preview(state, summary.game_id, now):
                     send_preview_once(client, telegram, settings, state, summary.game_id)
-                send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
+                after_game_start = is_after_game_start(summary, settings, now)
+                if after_game_start:
+                    send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                 sleep_seconds = seconds_until_next_due(
                     now,
                     seconds_until_pregame(summary, settings, now),
-                    state.get("nextDailyRankingCheckAt"),
+                    state.get("nextDailyRankingCheckAt") if after_game_start else None,
                     state.get("nextPreviewCheckAt"),
                 )
-                logging.info(
+                logging.debug(
                     "KIA game %s is outside polling window. Sleeping %ss.",
                     summary.game_id,
                     sleep_seconds,
                 )
-                sleep_with_command_polling(client, weather_client, telegram, settings, state, min(sleep_seconds, 60))
+                sleep_with_command_polling(client, weather_client, telegram, settings, state, sleep_seconds)
                 continue
 
             if state.get("relayStoppedGameId") == summary.game_id and not is_after_game_start(summary, settings, now):
-                logging.info("Relay stopped for %s by /gg before game start. Waiting for final result.", summary.game_id)
+                logging.debug("Relay stopped for %s by /gg before game start. Waiting for final result.", summary.game_id)
                 sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.pregame_poll_seconds)
                 continue
 
@@ -1023,7 +1087,7 @@ def main() -> None:
                     now,
                 )
                 if handled:
-                    sleep_with_command_polling(client, weather_client, telegram, settings, state, min(settings.idle_poll_seconds, 60))
+                    sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.idle_poll_seconds)
                     continue
 
             game_over = process_relay(
@@ -1038,7 +1102,7 @@ def main() -> None:
                 summary.home_code,
             )
             if game_over and state.get("gameOverSentGameId") != summary.game_id:
-                send_game_end_record_once(
+                record_sent = send_game_end_record_once(
                     client,
                     telegram,
                     settings,
@@ -1049,11 +1113,14 @@ def main() -> None:
                     int(state.get("awayScore") or 0),
                     int(state.get("homeScore") or 0),
                 )
+                if not record_sent:
+                    sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.idle_poll_seconds)
+                    continue
                 telegram.send_message("경기 종료 알림을 확인했습니다. 오늘도 수고하셨습니다.")
                 state["gameOverSentGameId"] = summary.game_id
                 save_state(settings.state_path, state)
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
-                sleep_with_command_polling(client, weather_client, telegram, settings, state, min(settings.idle_poll_seconds, 60))
+                sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.idle_poll_seconds)
             elif game_over:
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                 sleep_seconds = seconds_until_next_due(
@@ -1062,7 +1129,7 @@ def main() -> None:
                     state.get("nextDailyRankingCheckAt"),
                 )
                 logging.info("Game %s already ended. Sleeping %ss.", summary.game_id, sleep_seconds)
-                sleep_with_command_polling(client, weather_client, telegram, settings, state, min(sleep_seconds, 60))
+                sleep_with_command_polling(client, weather_client, telegram, settings, state, sleep_seconds)
             else:
                 sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.poll_seconds)
 
