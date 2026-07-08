@@ -1,8 +1,9 @@
 import unittest
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from bot import final_score_from_record, send_game_end_record_once
+from bot import final_score_from_record, format_team_schedule, send_game_end_record_once
 from config import Settings
 
 
@@ -64,6 +65,41 @@ class FinalScoreTest(unittest.TestCase):
 
         self.assertTrue(sent)
         self.assertIn("KIA 3 : 11 롯데", "\n".join(telegram.messages))
+
+
+class TeamScheduleTest(unittest.TestCase):
+    def test_format_team_schedule_groups_consecutive_matchups(self):
+        games = [
+            {"date": date(2026, 7, 9), "awayCode": "HT", "homeCode": "LT"},
+            {"date": date(2026, 7, 16), "awayCode": "HT", "homeCode": "SK"},
+            {"date": date(2026, 7, 17), "awayCode": "HT", "homeCode": "SK"},
+            {"date": date(2026, 7, 18), "awayCode": "HT", "homeCode": "SK"},
+            {"date": date(2026, 7, 19), "awayCode": "HT", "homeCode": "SK"},
+            {"date": date(2026, 7, 21), "awayCode": "HH", "homeCode": "HT"},
+            {"date": date(2026, 7, 22), "awayCode": "HH", "homeCode": "HT"},
+            {"date": date(2026, 7, 23), "awayCode": "HH", "homeCode": "HT"},
+            {"date": date(2026, 7, 24), "awayCode": "WO", "homeCode": "HT"},
+            {"date": date(2026, 7, 25), "awayCode": "WO", "homeCode": "HT"},
+            {"date": date(2026, 7, 26), "awayCode": "WO", "homeCode": "HT"},
+            {"date": date(2026, 7, 28), "awayCode": "HT", "homeCode": "OB"},
+        ]
+
+        message = format_team_schedule(games, "HT")
+
+        self.assertEqual(
+            message,
+            "\n".join(
+                [
+                    "KIA 경기 일정",
+                    "",
+                    "KIA vs 롯데 7/9",
+                    "KIA vs SSG 7/16 - 7/19",
+                    "한화 vs KIA 7/21 - 7/23",
+                    "키움 vs KIA 7/24 - 7/26",
+                ]
+            ),
+        )
+        self.assertNotIn("두산", message)
 
 
 if __name__ == "__main__":

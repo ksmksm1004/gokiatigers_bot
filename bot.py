@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +40,8 @@ from telegram import TelegramBot
 BOT_COMMANDS = [
     ("/라인업", "오늘 KIA 경기 선발 라인업 확인"),
     ("/lineup", "오늘 KIA 경기 선발 라인업 확인"),
+    ("/일정", "KIA 향후 경기 일정 확인"),
+    ("/schedule", "KIA 향후 경기 일정 확인"),
     ("/기록", "오늘 KIA 경기 기록 확인"),
     ("/record", "오늘 KIA 경기 기록 확인"),
     ("/순위", "KBO 팀 순위 확인"),
@@ -54,6 +56,7 @@ BOT_COMMANDS = [
 
 TELEGRAM_MENU_COMMANDS = [
     ("/lineup", "오늘 KIA 경기 선발 라인업 확인"),
+    ("/schedule", "KIA 향후 경기 일정 확인"),
     ("/record", "오늘 KIA 경기 기록 확인"),
     ("/rank", "KBO 팀 순위 확인"),
     ("/weather", "오늘 KIA 경기 구장 날씨"),
@@ -61,6 +64,21 @@ TELEGRAM_MENU_COMMANDS = [
     ("/re", "오늘 경기 중계 재개"),
     ("/help", "사용 가능한 명령어 보기"),
 ]
+
+TEAM_NAMES = {
+    "HT": "KIA",
+    "LT": "롯데",
+    "SK": "SSG",
+    "SS": "삼성",
+    "LG": "LG",
+    "OB": "두산",
+    "HH": "한화",
+    "NC": "NC",
+    "WO": "키움",
+    "KT": "KT",
+}
+
+TERMINAL_SCHEDULE_STATUS = {"RESULT", "END", "CANCEL", "CANCELED", "CANCELLED"}
 
 
 def setup_logging(settings: Settings) -> None:
@@ -466,6 +484,120 @@ def send_team_rankings(
     telegram.send_message(format_team_rankings({"seasonTeamStats": rankings}, {"seasonTeamLastTenGameStats": last_ten}))
 
 
+def send_team_schedule(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    now: datetime,
+) -> None:
+    message = format_team_schedule(fetch_team_schedule_games(client, now.date(), settings.team_code), settings.team_code)
+    telegram.send_message(message)
+
+
+def fetch_team_schedule_games(
+    client: NaverSportsClient,
+    start: date,
+    team_code: str,
+    max_groups: int = 4,
+    months_to_scan: int = 4,
+) -> list[dict[str, Any]]:
+    games: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    current_month = start.replace(day=1)
+
+    for month_offset in range(months_to_scan):
+        month = _add_months(current_month, month_offset)
+        data = client.calendar(month)
+        result = data.get("result", data)
+        for date_info in result.get("dates", []):
+            ymd = str(date_info.get("ymd") or "")
+            game_date = _parse_ymd(ymd)
+            if not game_date or game_date < start:
+                continue
+            for game in date_info.get("gameInfos") or []:
+                away_code = str(game.get("awayTeamCode") or game.get("aCode") or "")
+                home_code = str(game.get("homeTeamCode") or game.get("hCode") or "")
+                if team_code not in {away_code, home_code}:
+                    continue
+                if str(game.get("statusCode") or game.get("gameStatus") or "") in TERMINAL_SCHEDULE_STATUS:
+                    continue
+                key = (ymd, away_code, home_code)
+                if key in seen:
+                    continue
+                seen.add(key)
+                games.append(
+                    {
+                        "date": game_date,
+                        "awayCode": away_code,
+                        "homeCode": home_code,
+                    }
+                )
+        if len(_schedule_groups(games)) >= max_groups:
+            break
+
+    return sorted(games, key=lambda game: game["date"])
+
+
+def format_team_schedule(games: list[dict[str, Any]], team_code: str, max_groups: int = 4) -> str:
+    team_name = TEAM_NAMES.get(team_code, team_code)
+    groups = _schedule_groups(games)[:max_groups]
+    lines = [f"{team_name} 경기 일정"]
+    if not groups:
+        lines.append("확인된 향후 경기가 없습니다.")
+        return "\n\n".join([lines[0], lines[1]])
+
+    lines.append("")
+    for group in groups:
+        away_name = TEAM_NAMES.get(group["awayCode"], group["awayCode"])
+        home_name = TEAM_NAMES.get(group["homeCode"], group["homeCode"])
+        lines.append(f"{away_name} vs {home_name} {_format_schedule_range(group['start'], group['end'])}")
+    return "\n".join(lines)
+
+
+def _schedule_groups(games: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    for game in sorted(games, key=lambda item: item["date"]):
+        if (
+            groups
+            and groups[-1]["awayCode"] == game["awayCode"]
+            and groups[-1]["homeCode"] == game["homeCode"]
+            and game["date"] <= groups[-1]["end"] + timedelta(days=1)
+        ):
+            if game["date"] > groups[-1]["end"]:
+                groups[-1]["end"] = game["date"]
+            continue
+        groups.append(
+            {
+                "awayCode": game["awayCode"],
+                "homeCode": game["homeCode"],
+                "start": game["date"],
+                "end": game["date"],
+            }
+        )
+    return groups
+
+
+def _format_schedule_range(start: date, end: date) -> str:
+    start_text = f"{start.month}/{start.day}"
+    if start == end:
+        return start_text
+    return f"{start_text} - {end.month}/{end.day}"
+
+
+def _add_months(value: date, months: int) -> date:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    return date(year, month, 1)
+
+
+def _parse_ymd(value: str) -> date | None:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
 def send_stadium_weather(
     client: NaverSportsClient,
     weather_client: NaverWeatherClient,
@@ -763,6 +895,8 @@ def handle_telegram_commands(
                     telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
                     continue
                 send_kia_record(client, telegram, game_id, settings.team_code)
+            elif command in {"/일정", "/schedule"}:
+                send_team_schedule(client, telegram, settings, datetime.now(settings.timezone))
             elif command in {"/순위", "/rank"}:
                 send_team_rankings(client, telegram, settings)
             elif command in {"/날씨", "/weather"}:
