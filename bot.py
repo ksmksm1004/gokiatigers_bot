@@ -110,6 +110,47 @@ def score_from_game(game: dict[str, Any], side: str) -> int:
     return 0
 
 
+def final_score_from_record(record: dict[str, Any], fallback_away: int, fallback_home: int) -> tuple[int, int]:
+    batting = record.get("battersBoxscore", {})
+    away_total = batting.get("awayTotal", {})
+    home_total = batting.get("homeTotal", {})
+    away = _optional_int(away_total.get("run"))
+    home = _optional_int(home_total.get("run"))
+
+    info = record.get("gameInfo", {})
+    if away is None:
+        away = _optional_score_from_game(info, "away")
+    if home is None:
+        home = _optional_score_from_game(info, "home")
+
+    return (
+        fallback_away if away is None else away,
+        fallback_home if home is None else home,
+    )
+
+
+def _optional_score_from_game(game: dict[str, Any], side: str) -> int | None:
+    keys = (
+        ("aScore", "awayScore", "awayTeamScore", "away_score")
+        if side == "away"
+        else ("hScore", "homeScore", "homeTeamScore", "home_score")
+    )
+    for key in keys:
+        value = _optional_int(game.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def merge_game_status(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
     merged = base.copy()
     for key, value in update.items():
@@ -758,9 +799,7 @@ def send_game_end_record_once(
     if not record:
         logging.info("Game record is not ready for %s. Will retry later.", game_id)
         return False
-    record_info = record.get("gameInfo", {})
-    away_score = away_score or score_from_game(record_info, "away")
-    home_score = home_score or score_from_game(record_info, "home")
+    away_score, home_score = final_score_from_record(record, away_score, home_score)
     highlights = format_game_highlights(record, settings.team_code)
     if highlights:
         telegram.send_message(highlights)
