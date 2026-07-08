@@ -129,13 +129,13 @@ def format_stadium_weather(
     if current:
         lines.append(
             "현재 "
-            f"{current.get('wetrTxt', '-')} {current.get('tmpr', '-')}도"
-            f" / 바람 {current.get('windSpd', '-')}m/s"
-            f" / 1시간 강수 {current.get('oneHourRainAmt', '-')}mm"
+            f"{_weather_text(current.get('wetrTxt', '-'))} {current.get('tmpr', '-')}°"
+            f" | 바람 {current.get('windSpd', '-')}m/s"
+            f" | 1시간 강수 {_rain_amount_text(current.get('oneHourRainAmt', '-'))}"
         )
     if air:
         lines.append(
-            f"미세먼지 {air.get('stationPm10Legend', '-')} / 초미세먼지 {air.get('stationPm25Legend', '-')}"
+            f"미세먼지 {air.get('stationPm10Legend', '-')} | 초미세먼지 {air.get('stationPm25Legend', '-')}"
         )
     if upcoming:
         lines += ["", "시간별 날씨"]
@@ -165,9 +165,9 @@ def _format_hourly_item(item: dict[str, Any]) -> str:
     rain_prob = item.get("rainProb", "-")
     rain_amt = item.get("rainAmt", item.get("oneHourRainAmt", "-"))
     return (
-        f"{label} {item.get('wetrTxt', '-')} {item.get('tmpr', '-')}도"
-        f" / 강수확률 {_rain_prob_text(rain_prob)} / 강수 {rain_amt}mm"
-        f" / 바람 {item.get('windSpd', '-')}m/s"
+        f"{label} {_weather_text(item.get('wetrTxt', '-'))} {item.get('tmpr', '-')}°"
+        f" | 강수 {_rain_prob_text(rain_prob)} ({_rain_amount_text(rain_amt)})"
+        f" | 바람 {item.get('windSpd', '-')}m/s"
     )
 
 
@@ -175,3 +175,21 @@ def _rain_prob_text(value: Any) -> str:
     if value in (None, "", "-"):
         return "-"
     return f"{value}%"
+
+
+def _rain_amount_text(value: Any) -> str:
+    if value in (None, ""):
+        return "-"
+    text = str(value)
+    if text == "-":
+        return "-"
+    if text.endswith("mm"):
+        return text
+    return f"{text}mm"
+
+
+def _weather_text(value: Any) -> str:
+    text = str(value or "-")
+    if text == "구름많음":
+        return "흐림"
+    return text

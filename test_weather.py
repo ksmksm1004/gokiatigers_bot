@@ -14,12 +14,12 @@ class NaverWeatherTest(unittest.TestCase):
     def test_parse_weather_page_and_format(self):
         sample = (
             '<script>var blockApiResult = {"results":{"choiceResult":{'
-            '"talkHeader~~1":{"nowFcastInfo":{"wetrTxt":"맑음","tmpr":26.0,'
+            '"talkHeader~~1":{"nowFcastInfo":{"wetrTxt":"구름많음","tmpr":26.0,'
             '"windSpd":5.0,"oneHourRainAmt":"0.0"},"airNowInfo":'
             '{"stationPm10Legend":"좋음","stationPm25Legend":"보통"}},'
             '"visualMap~~2":{"domesticWetrList":[{"wetrTxt":"맑음","tmpr":25.0,'
             '"rainProb":"-","rainAmt":"0","windSpd":3.2,"aplYmd":"20260708",'
-            '"aplTm":"01"},{"wetrTxt":"비","tmpr":24.0,"rainProb":"60",'
+            '"aplTm":"01"},{"wetrTxt":"구름많음","tmpr":24.0,"rainProb":"60",'
             '"rainAmt":"2","windSpd":4.1,"aplYmd":"20260708","aplTm":"02"}]}}}};'
             "</script>"
         )
@@ -33,10 +33,10 @@ class NaverWeatherTest(unittest.TestCase):
         )
 
         self.assertIn("구장 날씨 | 광주", message)
-        self.assertIn("현재 맑음 26.0도", message)
-        self.assertIn("미세먼지 좋음 / 초미세먼지 보통", message)
-        self.assertIn("01시 맑음 25.0도 / 강수확률 - / 강수 0mm", message)
-        self.assertIn("02시 비 24.0도 / 강수확률 60% / 강수 2mm", message)
+        self.assertIn("현재 흐림 26.0° | 바람 5.0m/s | 1시간 강수 0.0mm", message)
+        self.assertIn("미세먼지 좋음 | 초미세먼지 보통", message)
+        self.assertIn("01시 맑음 25.0° | 강수 - (0mm) | 바람 3.2m/s", message)
+        self.assertIn("02시 흐림 24.0° | 강수 60% (2mm) | 바람 4.1m/s", message)
 
 
 if __name__ == "__main__":
