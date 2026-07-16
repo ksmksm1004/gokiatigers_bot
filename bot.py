@@ -375,7 +375,7 @@ def next_hour_at(now: datetime) -> datetime:
 
 
 def next_schedule_lookup_at(now: datetime) -> datetime:
-    for hour in (9, 12):
+    for hour in (9, 12, 15, 17, 18, 19, 20, 21):
         candidate = now.replace(hour=hour, minute=0, second=0, microsecond=0)
         if now < candidate:
             return candidate
@@ -397,8 +397,14 @@ def send_lineup_once(
     state: dict[str, Any],
     game_id: str,
 ) -> None:
-    if state.get("lineupSentGameId") == game_id:
+    if (
+        state.get("lineupSentGameId") == game_id
+        and state.get("lineupAwaySentGameId") == game_id
+        and state.get("lineupHomeSentGameId") == game_id
+    ):
         return
+    if state.get("lineupSentGameId") == game_id:
+        state.pop("lineupSentGameId", None)
 
     preview = unwrap(client.preview(game_id), "previewData")
     if not has_starting_lineups(preview):
@@ -415,12 +421,9 @@ def send_lineup_once(
 
     for side, label in (("away", away_name), ("home", home_name)):
         sent_key = f"lineup{side.title()}SentGameId"
-        attempted_key = f"lineup{side.title()}AttemptedGameId"
-        if state.get(sent_key) == game_id or state.get(attempted_key) == game_id:
+        if state.get(sent_key) == game_id:
             continue
 
-        state[attempted_key] = game_id
-        save_state(settings.state_path, state)
         items = lineup_media_items(preview, side)
         if not items:
             continue
@@ -433,8 +436,6 @@ def send_lineup_once(
             logging.exception("Failed to send %s lineup for %s. It will not be retried automatically.", label, game_id)
 
     if state.get("lineupAwaySentGameId") == game_id and state.get("lineupHomeSentGameId") == game_id:
-        state["lineupSentGameId"] = game_id
-    else:
         state["lineupSentGameId"] = game_id
     save_state(settings.state_path, state)
 
@@ -657,6 +658,11 @@ def stop_relay_for_game(
     telegram.send_message("GG 선언 접수. 오늘 경기 중계는 여기서 멈추고, 경기 종료 후 결과와 순위만 보내겠습니다.")
 
 
+def relay_has_game_over(client: NaverSportsClient, game_id: str) -> bool:
+    relay = unwrap(client.relay(game_id), "textRelayData")
+    return is_game_over(parse_relay_events(relay))
+
+
 def resume_relay_for_game(
     client: NaverSportsClient,
     telegram: TelegramBot,
@@ -688,6 +694,13 @@ def resume_relay_for_game(
                 "updatedAt": datetime.now(settings.timezone).isoformat(),
             }
         )
+        if not is_game_over(events):
+            for key in ("recordSentGameId", "gameOverSentGameId"):
+                if state.get(key) == game_id:
+                    state.pop(key, None)
+            today = datetime.now(settings.timezone).date().isoformat()
+            if state.get("dailyRankingSentDate") == today:
+                state.pop("dailyRankingSentDate", None)
     state.pop("relayStoppedGameId", None)
     save_state(settings.state_path, state)
     telegram.send_message("중계 재개합니다. 지금 이후 새 소식부터 보내겠습니다.")
@@ -1006,24 +1019,10 @@ def finish_stopped_relay_game_if_done(
     if state.get("relayStoppedGameId") != summary.game_id:
         return False
     detailed_game = refresh_game_status_from_schedule(client, settings, state, summary, detailed_game, now)
-    if not is_terminal_game(detailed_game, set(state.get("cancelledGameIds", []))):
-        away_score = score_from_game(detailed_game, "away") or int(state.get("awayScore") or 0)
-        home_score = score_from_game(detailed_game, "home") or int(state.get("homeScore") or 0)
-        record_sent = send_game_end_record_once(
-            client,
-            telegram,
-            settings,
-            state,
-            summary.game_id,
-            summary.away_name or "원정",
-            summary.home_name or "홈",
-            away_score,
-            home_score,
-        )
-        if not record_sent:
-            logging.debug("Relay stopped for %s by /gg. Waiting for final result.", summary.game_id)
-            send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
-            return True
+    if not relay_has_game_over(client, summary.game_id):
+        logging.debug("Relay stopped for %s by /gg. Waiting for relay game-over marker.", summary.game_id)
+        return True
+
     if state.get("gameOverSentGameId") != summary.game_id:
         away_score = score_from_game(detailed_game, "away") or int(state.get("awayScore") or 0)
         home_score = score_from_game(detailed_game, "home") or int(state.get("homeScore") or 0)
