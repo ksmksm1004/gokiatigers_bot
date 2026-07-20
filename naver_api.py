@@ -66,9 +66,10 @@ class NaverSportsClient:
         )
 
     def games_on(self, day: date) -> list[dict[str, Any]]:
-        calendar_games = find_calendar_game_dicts(self.calendar(day), day)
-        if calendar_games:
-            return calendar_games
+        try:
+            return find_calendar_game_dicts(self.calendar(day), day)
+        except Exception:
+            pass
 
         ymd = day.strftime("%Y-%m-%d")
         compact = day.strftime("%Y%m%d")
@@ -119,7 +120,7 @@ def find_calendar_game_dicts(value: Any, day: date) -> list[dict[str, Any]]:
     for date_info in result.get("dates", []):
         if date_info.get("ymd") != selected:
             continue
-        for game in date_info.get("gameInfos", []):
+        for game in date_info.get("gameInfos") or []:
             if not game.get("homeTeamCode") or not game.get("awayTeamCode"):
                 continue
             games.append(
