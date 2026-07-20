@@ -151,7 +151,7 @@ class FinalScoreTest(unittest.TestCase):
             "relayStoppedGameId": "game1",
             "recordSentGameId": "game1",
             "gameOverSentGameId": "game1",
-            "dailyRankingSentDate": "2026-07-16",
+            "dailyRankingSentDate": "2026-07-20",
         }
         telegram = FakeTelegram()
 

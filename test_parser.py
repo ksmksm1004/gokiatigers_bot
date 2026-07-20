@@ -6,6 +6,8 @@ from parser import (
     expected_batters_message,
     format_batter_summary_stats,
     format_relay_event,
+    format_relay_event_with_context,
+    plate_result_history,
     should_send_relay_event,
 )
 from parser import format_preview
@@ -108,6 +110,185 @@ class CompactBatterFormatTest(unittest.TestCase):
 
         self.assertIn("9 김호령 | .281 | 0-0", message)
         self.assertNotIn(" | 타석 준비", message)
+
+    def test_relay_batter_snapshot_uses_full_plate_history(self):
+        events = [
+            RelayEvent(
+                event_id=1,
+                inning=2,
+                half="초",
+                text="김선빈 : 삼진 아웃",
+                home_score=0,
+                away_score=0,
+                batter_code="6",
+                home_or_away="0",
+                player_name="김선빈",
+            ),
+            RelayEvent(
+                event_id=2,
+                inning=5,
+                half="초",
+                text="김선빈 : 유격수 땅볼 아웃",
+                home_score=3,
+                away_score=1,
+                batter_code="6",
+                home_or_away="0",
+                player_name="김선빈",
+            ),
+            RelayEvent(
+                event_id=3,
+                inning=8,
+                half="초",
+                text="김선빈 : 우익수 오른쪽 1루타",
+                home_score=5,
+                away_score=5,
+                batter_code="6",
+                home_or_away="0",
+                player_name="김선빈",
+            ),
+        ]
+        player = {"name": "김선빈", "batOrder": 6, "seasonHra": "0.251", "ab": 3, "hit": 1, "rbi": 1}
+
+        history = plate_result_history(events, events[-1], player)
+        message = format_relay_event_with_context(events[-1], "KIA", "SSG", player_record=player, plate_results=history)
+
+        self.assertEqual(history, ["삼진", "땅볼", "안타(타점1)"])
+        self.assertIn("6 김선빈 | .251 | 1-3 | 삼진 땅볼 안타(타점1)", message)
+
+    def test_score_runner_event_omits_repeated_batter_snapshot(self):
+        previous = RelayEvent(
+            event_id=1,
+            inning=8,
+            half="초",
+            text="김호령 : 중견수 앞 1루타",
+            home_score=5,
+            away_score=5,
+            batter_code="1",
+            home_or_away="0",
+            player_name="김호령",
+        )
+        score = RelayEvent(
+            event_id=2,
+            inning=8,
+            half="초",
+            text="2루주자 김규성 : 홈인",
+            home_score=5,
+            away_score=6,
+            batter_code="1",
+            home_or_away="0",
+        )
+        player = {"name": "김호령", "batOrder": 1, "seasonHra": "0.283", "ab": 4, "hit": 1, "rbi": 2}
+
+        message = format_relay_event_with_context(score, "KIA", "SSG", previous, player)
+
+        self.assertIn("김호령 : 중견수 앞 1루타", message)
+        self.assertNotIn("1 김호령 | .283 | 1-4", message)
+
+    def test_score_homer_event_keeps_batter_snapshot(self):
+        previous = RelayEvent(
+            event_id=0,
+            inning=8,
+            half="초",
+            text="김호령 : 중견수 앞 1루타",
+            home_score=5,
+            away_score=7,
+            batter_code="1",
+            home_or_away="0",
+            player_name="김호령",
+        )
+        events = [
+            RelayEvent(
+                event_id=1,
+                inning=1,
+                half="초",
+                text="카스트로 : 삼진 아웃",
+                home_score=0,
+                away_score=0,
+                batter_code="2",
+                home_or_away="0",
+                player_name="카스트로",
+            ),
+            RelayEvent(
+                event_id=2,
+                inning=3,
+                half="초",
+                text="카스트로 : 우익수 앞 1루타",
+                home_score=0,
+                away_score=1,
+                batter_code="2",
+                home_or_away="0",
+                player_name="카스트로",
+            ),
+            RelayEvent(
+                event_id=3,
+                inning=5,
+                half="초",
+                text="카스트로 : 2루수 땅볼 아웃",
+                home_score=3,
+                away_score=2,
+                batter_code="2",
+                home_or_away="0",
+                player_name="카스트로",
+            ),
+            RelayEvent(
+                event_id=4,
+                inning=7,
+                half="초",
+                text="카스트로 : 좌익수 앞 1루타",
+                home_score=5,
+                away_score=5,
+                batter_code="2",
+                home_or_away="0",
+                player_name="카스트로",
+            ),
+            RelayEvent(
+                event_id=5,
+                inning=8,
+                half="초",
+                text="카스트로 : 우익수 뒤 홈런 (홈런거리:125M)",
+                home_score=5,
+                away_score=8,
+                batter_code="2",
+                home_or_away="0",
+                player_name="카스트로",
+            ),
+        ]
+        event = events[-1]
+        player = {"name": "카스트로", "batOrder": 2, "seasonHra": "0.324", "ab": 5, "hit": 3, "rbi": 2}
+        history = plate_result_history(events, event, player)
+
+        message = format_relay_event_with_context(event, "KIA", "SSG", previous, player, history)
+
+        self.assertIn("득점 | 8회초", message)
+        self.assertIn("2 카스트로 | .324 | 3-5 | 삼진 안타 땅볼 안타 홈런(타점2)", message)
+        self.assertNotIn("김호령 : 중견수 앞 1루타", message)
+
+    def test_runner_steal_and_video_review_do_not_use_current_batter_stats(self):
+        steal = RelayEvent(
+            event_id=1,
+            inning=8,
+            half="초",
+            text="1루주자 김호령 : 도루로 2루까지 진루",
+            home_score=5,
+            away_score=7,
+            batter_code="2",
+            home_or_away="0",
+        )
+        video = RelayEvent(
+            event_id=2,
+            inning=8,
+            half="초",
+            text="8회초 2번타순 2구 후 SSG요청 비디오 판독: 김호령 2루 도루 관련 세이프→세이프",
+            home_score=5,
+            away_score=7,
+            batter_code="2",
+            home_or_away="0",
+        )
+        player = {"name": "카스트로", "batOrder": 2, "seasonHra": "0.320", "ab": 4, "hit": 2, "sb": 1}
+
+        self.assertTrue(should_send_relay_event(steal, "SK", "HT", "HT"))
+        self.assertNotIn("카스트로", format_relay_event_with_context(steal, "KIA", "SSG", player_record=player))
+        self.assertNotIn("카스트로", format_relay_event_with_context(video, "KIA", "SSG", player_record=player))
 
     def test_half_summary_omits_zero_stats(self):
         self.assertEqual(

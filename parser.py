@@ -310,14 +310,28 @@ def batting_team_name(event: RelayEvent, home_name: str, away_name: str) -> str:
 
 
 def is_kia_batter_event(event: RelayEvent, home_code: str, away_code: str, team_code: str = KIA_CODE) -> bool:
+    if is_video_review_event(event) or is_runner_event(event):
+        return False
     if not is_kia_batting(event, home_code, away_code, team_code):
         return False
-    return event.is_plate_result and (
+    return is_batter_result_event(event)
+
+
+def is_batter_result_event(event: RelayEvent) -> bool:
+    return event.is_plate_result and not is_runner_event(event) and not is_video_review_event(event) and (
         is_hit_event(event)
         or is_walk_event(event)
         or is_sacrifice_event(event)
-        or is_steal_event(event)
+        or is_batter_out_event(event)
     )
+
+
+def is_runner_event(event: RelayEvent) -> bool:
+    return bool(re.match(r"\d루주자\s+", event.text))
+
+
+def is_video_review_event(event: RelayEvent) -> bool:
+    return "비디오 판독" in event.text or "비디오판독" in event.text
 
 
 def is_hit_event(event: RelayEvent) -> bool:
@@ -336,18 +350,24 @@ def is_steal_event(event: RelayEvent) -> bool:
     return "도루" in event.text and "실패" not in event.text
 
 
+def is_batter_out_event(event: RelayEvent) -> bool:
+    return any(word in event.text for word in ("삼진", "땅볼", "플라이", "뜬공", "직선타", "병살타"))
+
+
 def should_send_relay_event(event: RelayEvent, home_code: str, away_code: str, team_code: str = KIA_CODE) -> bool:
     if event.text == "투수 투수판 이탈":
         return False
     if event.text.startswith("승리투수") or event.text.startswith("패전투수"):
         return False
-    if "비디오 판독" in event.text or "비디오판독" in event.text:
+    if is_video_review_event(event):
         return True
     if event.is_pitching_change or event.is_game_marker:
         return True
     if event.is_score_event:
         return True
-    return is_kia_batter_event(event, home_code, away_code, team_code)
+    if is_kia_batter_event(event, home_code, away_code, team_code):
+        return True
+    return is_kia_batting(event, home_code, away_code, team_code) and is_runner_event(event) and is_steal_event(event)
 
 
 def active_lineup(relay: dict[str, Any], side: str) -> list[dict[str, Any]]:
@@ -481,15 +501,38 @@ def relay_player_record(relay: dict[str, Any], event: RelayEvent) -> dict[str, A
     return {}
 
 
+def plate_result_history(
+    events: list[RelayEvent],
+    event: RelayEvent,
+    player_record: dict[str, Any] | None = None,
+) -> list[str]:
+    if not event.batter_code or not is_batter_result_event(event):
+        return []
+
+    labels: list[str] = []
+    for candidate in sorted(events, key=lambda item: item.event_id):
+        if candidate.event_id > event.event_id:
+            break
+        if candidate.batter_code != event.batter_code or not is_batter_result_event(candidate):
+            continue
+        label_player = (player_record or {}) if candidate.event_id == event.event_id else {}
+        label = _plate_result_label(candidate, label_player)
+        if label:
+            labels.append(label)
+    return labels
+
+
 def format_relay_event_with_context(
     event: RelayEvent,
     away_name: str,
     home_name: str,
     previous_plate_event: RelayEvent | None = None,
     player_record: dict[str, Any] | None = None,
+    plate_results: list[str] | None = None,
 ) -> str:
-    text = format_relay_event(event, away_name, home_name, player_record)
-    if event.is_score_event and previous_plate_event and previous_plate_event.text not in text:
+    show_player_stats = is_batter_result_event(event)
+    text = format_relay_event(event, away_name, home_name, player_record, plate_results, show_player_stats)
+    if event.is_score_event and not is_batter_result_event(event) and previous_plate_event and previous_plate_event.text not in text:
         lines = text.splitlines()
         insert_at = 3 if len(lines) >= 3 else len(lines)
         lines.insert(insert_at, previous_plate_event.text)
@@ -552,6 +595,8 @@ def format_relay_event(
     away_name: str,
     home_name: str,
     player_record: dict[str, Any] | None = None,
+    plate_results: list[str] | None = None,
+    show_player_stats: bool = True,
 ) -> str:
     prefix = "득점" if event.is_score_event else "교체" if event.is_pitching_change else "중계"
     lines = [
@@ -560,11 +605,11 @@ def format_relay_event(
         event.text,
     ]
 
-    if event.is_game_marker or event.is_pitching_change:
+    if event.is_game_marker or event.is_pitching_change or not show_player_stats:
         return "\n".join(lines)
 
     player = player_record or event.batter_record or event.player_info or {}
-    stats = format_batter_snapshot(player, event.player_name, event)
+    stats = format_batter_snapshot(player, event.player_name, event, plate_results)
     if stats:
         lines += ["", stats]
     return "\n".join(lines)
@@ -574,6 +619,7 @@ def format_batter_snapshot(
     player: dict[str, Any],
     fallback_name: str | None = None,
     event: RelayEvent | None = None,
+    plate_results: list[str] | None = None,
 ) -> str:
     if not player:
         return ""
@@ -588,7 +634,7 @@ def format_batter_snapshot(
         "|",
         f"{_to_int(player.get('hit'))}-{_to_int(player.get('ab'))}",
     ]
-    result = _plate_result_label(event, player) if event else ""
+    result = " ".join(plate_results or []) if plate_results else _plate_result_label(event, player) if event else ""
     if result:
         parts += ["|", result]
     return " ".join(parts)
@@ -652,6 +698,16 @@ def _plate_result_label(event: RelayEvent | None, player: dict[str, Any]) -> str
         label = "희생플라이"
     elif "희생번트" in text:
         label = "희생번트"
+    elif "삼진" in text:
+        label = "삼진"
+    elif "병살타" in text:
+        label = "병살타"
+    elif "땅볼" in text:
+        label = "땅볼"
+    elif "플라이" in text or "뜬공" in text:
+        label = "플라이"
+    elif "직선타" in text:
+        label = "직선타"
     elif "도루" in text and "실패" not in text:
         label = "도루"
 

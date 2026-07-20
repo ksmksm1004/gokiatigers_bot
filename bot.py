@@ -29,6 +29,7 @@ from parser import (
     lineup_media_items,
     parse_game_summary,
     parse_relay_events,
+    plate_result_history,
     player_photo_url,
     relay_player_record,
     should_send_relay_event,
@@ -858,7 +859,8 @@ def dispatch_relay_events(
 
         previous_plate = find_previous_plate_event(all_events, event)
         player_record = relay_player_record(relay, event)
-        message = format_relay_event_with_context(event, away_name, home_name, previous_plate, player_record)
+        plate_results = plate_result_history(all_events, event, player_record)
+        message = format_relay_event_with_context(event, away_name, home_name, previous_plate, player_record, plate_results)
         photo = None
         if is_kia_batter_event(event, home_code, away_code, settings.team_code):
             photo = player_photo_url(event)
