@@ -39,6 +39,128 @@ DRY_RUN=1 python3 bot.py
 nohup python3 bot.py > logs/nohup.out 2>&1 &
 ```
 
+## macOS LaunchAgent 등록
+
+재부팅 후에도 봇을 자동 실행하려면 앱용 디렉터리로 옮긴 뒤 가상환경을 다시 만듭니다.
+
+```bash
+APP_DIR="$HOME/apps/gokiatigers_bot"
+
+mkdir -p "$HOME/apps"
+mv /path/to/gokiatigers_bot "$APP_DIR"
+cd "$APP_DIR"
+
+rm -rf .venv
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+certifi CA 경로를 확인합니다. plist의 `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` 값은 이 출력과 같아야 합니다.
+
+```bash
+"$APP_DIR/.venv/bin/python3" -c "import certifi; print(certifi.where())"
+```
+
+`~/Library/LaunchAgents/com.gokiatigers.bot.plist`를 생성합니다. 아래의 `/Users/YOUR_USER/apps/gokiatigers_bot`와 CA 경로의 `python3.9` 부분은 본인 환경에 맞게 바꿔주세요. `~`와 `$HOME`은 plist 안에서 자동 확장되지 않으므로 절대 경로를 써야 합니다.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.gokiatigers.bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOUR_USER/apps/gokiatigers_bot/.venv/bin/python3</string>
+        <string>/Users/YOUR_USER/apps/gokiatigers_bot/bot.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/YOUR_USER/apps/gokiatigers_bot</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USER/apps/gokiatigers_bot/logs/launchd.out</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USER/apps/gokiatigers_bot/logs/launchd.err</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>SSL_CERT_FILE</key>
+        <string>/Users/YOUR_USER/apps/gokiatigers_bot/.venv/lib/python3.9/site-packages/certifi/cacert.pem</string>
+        <key>REQUESTS_CA_BUNDLE</key>
+        <string>/Users/YOUR_USER/apps/gokiatigers_bot/.venv/lib/python3.9/site-packages/certifi/cacert.pem</string>
+    </dict>
+</dict>
+</plist>
+```
+
+plist 문법과 권한을 확인한 뒤 등록합니다.
+
+```bash
+plutil -lint ~/Library/LaunchAgents/com.gokiatigers.bot.plist
+chmod 644 ~/Library/LaunchAgents/com.gokiatigers.bot.plist
+chown $(id -un):staff ~/Library/LaunchAgents/com.gokiatigers.bot.plist
+mkdir -p "$APP_DIR/logs"
+
+launchctl bootout gui/$(id -u)/com.gokiatigers.bot 2>/dev/null
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.gokiatigers.bot.plist 2>/dev/null
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.gokiatigers.bot.plist
+launchctl kickstart -k gui/$(id -u)/com.gokiatigers.bot
+```
+
+상태와 로그 확인:
+
+```bash
+launchctl print gui/$(id -u)/com.gokiatigers.bot
+ps aux | grep gokiatigers_bot | grep -v grep
+tail -f "$APP_DIR/logs/bot.log"
+tail -f "$APP_DIR/logs/launchd.err"
+```
+
+코드 변경 후 다시 실행:
+
+```bash
+cd "$APP_DIR"
+source .venv/bin/activate
+pip install -r requirements.txt
+python3 -m py_compile bot.py parser.py telegram.py naver_api.py naver_weather.py
+python3 -m unittest discover -p "test_*.py"
+
+launchctl kickstart -k gui/$(id -u)/com.gokiatigers.bot
+```
+
+`Bootstrap failed: 5`가 나오면 보통 plist 문법, 권한, 이미 등록된 job 문제입니다.
+
+```bash
+plutil -lint ~/Library/LaunchAgents/com.gokiatigers.bot.plist
+launchctl bootout gui/$(id -u)/com.gokiatigers.bot 2>/dev/null
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.gokiatigers.bot.plist 2>/dev/null
+log show --predicate 'process == "launchd"' --last 2m | grep gokiatigers
+```
+
+이전 경로 프로세스가 남아 있으면 종료합니다.
+
+```bash
+pkill -f "/old/path/to/gokiatigers_bot/bot.py"
+pkill -f "/old/path/to/gokiatigers_bot/.venv"
+```
+
 ## 동작
 
 - 오늘 KIA 경기 일정을 찾고 `logs/state.json`에 캐시합니다.
