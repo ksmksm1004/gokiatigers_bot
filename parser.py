@@ -825,20 +825,36 @@ def format_team_rankings(rankings: dict[str, Any], last_ten: dict[str, Any]) -> 
 
 def format_pitching_decisions(record: dict[str, Any], away_name: str, home_name: str, away_score: int, home_score: int) -> str:
     pitchers = record.get("pitchersBoxscore", {})
-    by_result: dict[str, list[str]] = {"승": [], "패": [], "세": []}
+    by_result: dict[str, list[str]] = {"승": [], "패": [], "세": [], "홀": []}
     for side in ("away", "home"):
         for player in pitchers.get(side, []):
-            result = player.get("wls")
+            result = _pitching_decision(player)
             if result == "승":
                 by_result["승"].append(f"승리투수: {player.get('name', '-')}")
             elif result == "패":
                 by_result["패"].append(f"패전투수: {player.get('name', '-')}")
             elif result == "세":
                 by_result["세"].append(f"세이브: {player.get('name', '-')}")
-    decisions = by_result["승"] + by_result["패"] + by_result["세"]
-    if not decisions:
-        return ""
+            elif result == "홀":
+                by_result["홀"].append(f"홀드: {player.get('name', '-')}")
+    decisions = by_result["승"] + by_result["패"] + by_result["세"] + by_result["홀"]
     return "\n".join(["중계 | 경기종료", f"{away_name} {away_score} : {home_score} {home_name}", *decisions])
+
+
+def _pitching_decision(player: dict[str, Any]) -> str:
+    for key in ("wls", "result", "winLoseSave", "wlsName"):
+        value = str(player.get(key) or "").strip()
+        if value in {"승", "패", "세", "홀"}:
+            return value
+        if value in {"W", "WIN", "승리"}:
+            return "승"
+        if value in {"L", "LOSE", "LOSS", "패전"}:
+            return "패"
+        if value in {"S", "SAVE", "세이브"}:
+            return "세"
+        if value in {"H", "HOLD", "홀드"}:
+            return "홀"
+    return ""
 
 
 def player_photo_url(event: RelayEvent) -> str | None:

@@ -1051,8 +1051,7 @@ def send_game_end_record_once(
     if highlights:
         telegram.send_message(highlights)
     decisions = format_pitching_decisions(record, away_name, home_name, away_score, home_score)
-    if decisions:
-        telegram.send_message(decisions)
+    telegram.send_message(decisions)
     telegram.send_message(format_kia_record(record, settings.team_code))
     state["recordSentGameId"] = game_id
     save_state(settings.state_path, state)

@@ -58,8 +58,12 @@ class FinalScoreTest(unittest.TestCase):
             },
             "teamPitchingBoxscore": {"away": {}},
             "pitchersBoxscore": {
-                "away": [{"name": "네일", "wls": "패"}],
-                "home": [{"name": "나균안", "wls": "승"}],
+                "away": [{"name": "네일", "result": "패"}],
+                "home": [
+                    {"name": "나균안", "result": "승"},
+                    {"name": "전상현", "result": "홀"},
+                    {"name": "정해영", "result": "세"},
+                ],
             },
         }
 
@@ -87,7 +91,13 @@ class FinalScoreTest(unittest.TestCase):
             )
 
         self.assertTrue(sent)
-        self.assertIn("KIA 3 : 11 롯데", "\n".join(telegram.messages))
+        joined = "\n".join(telegram.messages)
+        self.assertIn("중계 | 경기종료", joined)
+        self.assertIn("KIA 3 : 11 롯데", joined)
+        self.assertIn("승리투수: 나균안", joined)
+        self.assertIn("패전투수: 네일", joined)
+        self.assertIn("세이브: 정해영", joined)
+        self.assertIn("홀드: 전상현", joined)
 
     def test_stopped_relay_does_not_send_record_before_relay_game_over(self):
         record = {
