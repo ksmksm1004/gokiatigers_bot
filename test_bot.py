@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 
 from bot import (
+    dispatch_relay_events,
     final_score_from_record,
     finish_stopped_relay_game_if_done,
     format_team_schedule,
@@ -35,9 +36,14 @@ class FakeClient:
 class FakeTelegram:
     def __init__(self):
         self.messages = []
+        self.photos = []
 
     def send_message(self, text):
         self.messages.append(text)
+
+    def send_photo(self, photo_url, caption):
+        self.photos.append((photo_url, caption))
+        self.messages.append(caption)
 
 
 class FinalScoreTest(unittest.TestCase):
@@ -151,7 +157,6 @@ class FinalScoreTest(unittest.TestCase):
             "relayStoppedGameId": "game1",
             "recordSentGameId": "game1",
             "gameOverSentGameId": "game1",
-            "dailyRankingSentDate": "2026-07-20",
         }
         telegram = FakeTelegram()
 
@@ -163,6 +168,7 @@ class FinalScoreTest(unittest.TestCase):
                 state_path=Path(temp_dir) / "state.json",
                 log_path=Path(temp_dir) / "bot.log",
             )
+            state["dailyRankingSentDate"] = datetime.now(settings.timezone).date().isoformat()
             resume_relay_for_game(FakeClient(relay=relay), telegram, settings, state, "game1")
 
         self.assertNotIn("relayStoppedGameId", state)
@@ -205,6 +211,166 @@ class TeamScheduleTest(unittest.TestCase):
             ),
         )
         self.assertNotIn("두산", message)
+
+
+class RelayPlateHistoryStateTest(unittest.TestCase):
+    def test_dispatch_uses_state_history_and_fixes_stale_plate_totals(self):
+        relay = {
+            "homeLineup": {
+                "batter": [
+                    {
+                        "pcode": "5",
+                        "name": "한준수",
+                        "batOrder": 5,
+                        "seasonHra": "0.316",
+                        "ab": 1,
+                        "hit": 1,
+                        "rbi": 3,
+                    }
+                ]
+            }
+        }
+        events = [
+            SimpleNamespace(
+                event_id=1,
+                inning=1,
+                half="말",
+                text="한준수 : 우익수 뒤 홈런 (홈런거리:120M)",
+                home_score=2,
+                away_score=1,
+                batter_code="5",
+                player_code="5",
+                player_name="한준수",
+                home_or_away="1",
+                batter_record=None,
+                player_info=None,
+                current_state={},
+                title="1회말",
+                is_attack_start=False,
+                is_score_event=True,
+                is_pitching_change=False,
+                is_game_marker=False,
+                is_plate_result=True,
+            ),
+            SimpleNamespace(
+                event_id=2,
+                inning=3,
+                half="말",
+                text="한준수 : 우익수 앞 1루타",
+                home_score=6,
+                away_score=1,
+                batter_code="5",
+                player_code="5",
+                player_name="한준수",
+                home_or_away="1",
+                batter_record=None,
+                player_info=None,
+                current_state={},
+                title="3회말",
+                is_attack_start=False,
+                is_score_event=False,
+                is_pitching_change=False,
+                is_game_marker=False,
+                is_plate_result=True,
+            ),
+        ]
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+        telegram = FakeTelegram()
+        state = {}
+
+        dispatch_relay_events(telegram, settings, state, relay, events, events, set(), "한화", "KIA", "HH", "HT")
+
+        self.assertIn("5 한준수 | .316 | 2-2 | 홈런(타점3) 안타", telegram.messages[-1])
+
+    def test_dispatch_records_simple_outs_without_sending_until_next_relevant_result(self):
+        relay = {
+            "homeLineup": {
+                "batter": [
+                    {
+                        "pcode": "7",
+                        "name": "김호령",
+                        "batOrder": 7,
+                        "seasonHra": "0.282",
+                        "ab": 0,
+                        "hit": 0,
+                        "rbi": 0,
+                    }
+                ]
+            }
+        }
+        events = [
+            SimpleNamespace(
+                event_id=1,
+                inning=1,
+                half="말",
+                text="김호령 : 중견수 플라이 아웃",
+                home_score=4,
+                away_score=1,
+                batter_code="7",
+                player_code="7",
+                player_name="김호령",
+                home_or_away="1",
+                batter_record=None,
+                player_info=None,
+                current_state={},
+                title="1회말",
+                is_attack_start=False,
+                is_score_event=False,
+                is_pitching_change=False,
+                is_game_marker=False,
+                is_plate_result=True,
+            ),
+            SimpleNamespace(
+                event_id=2,
+                inning=3,
+                half="말",
+                text="김호령 : 3루수 병살타로 출루",
+                home_score=6,
+                away_score=1,
+                batter_code="7",
+                player_code="7",
+                player_name="김호령",
+                home_or_away="1",
+                batter_record=None,
+                player_info=None,
+                current_state={},
+                title="3회말",
+                is_attack_start=False,
+                is_score_event=False,
+                is_pitching_change=False,
+                is_game_marker=False,
+                is_plate_result=True,
+            ),
+            SimpleNamespace(
+                event_id=3,
+                inning=6,
+                half="말",
+                text="김호령 : 우익수 앞 안타",
+                home_score=6,
+                away_score=1,
+                batter_code="7",
+                player_code="7",
+                player_name="김호령",
+                home_or_away="1",
+                batter_record={"name": "김호령", "batOrder": 7, "seasonHra": "0.282", "ab": 3, "hit": 1, "rbi": 0},
+                player_info=None,
+                current_state={},
+                title="6회말",
+                is_attack_start=False,
+                is_score_event=False,
+                is_pitching_change=False,
+                is_game_marker=False,
+                is_plate_result=True,
+            ),
+        ]
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+        telegram = FakeTelegram()
+        state = {}
+
+        dispatch_relay_events(telegram, settings, state, relay, events, events, set(), "한화", "KIA", "HH", "HT")
+
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertIn("7 김호령 | .282 | 1-3 | 플라이 병살타 안타", telegram.messages[0])
 
 
 if __name__ == "__main__":

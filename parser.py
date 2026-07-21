@@ -314,7 +314,7 @@ def is_kia_batter_event(event: RelayEvent, home_code: str, away_code: str, team_
         return False
     if not is_kia_batting(event, home_code, away_code, team_code):
         return False
-    return is_batter_result_event(event)
+    return is_run_relevant_batter_event(event)
 
 
 def is_batter_result_event(event: RelayEvent) -> bool:
@@ -323,6 +323,14 @@ def is_batter_result_event(event: RelayEvent) -> bool:
         or is_walk_event(event)
         or is_sacrifice_event(event)
         or is_batter_out_event(event)
+    )
+
+
+def is_run_relevant_batter_event(event: RelayEvent) -> bool:
+    return event.is_plate_result and not is_runner_event(event) and not is_video_review_event(event) and (
+        is_hit_event(event)
+        or is_walk_event(event)
+        or is_sacrifice_event(event)
     )
 
 
@@ -501,6 +509,20 @@ def relay_player_record(relay: dict[str, Any], event: RelayEvent) -> dict[str, A
     return {}
 
 
+def current_player_record(relay: dict[str, Any], event: RelayEvent) -> dict[str, Any]:
+    lineup_record = relay_player_record(relay, event)
+    event_record = event.batter_record or event.player_info or {}
+    if lineup_record and event_record:
+        merged = lineup_record.copy()
+        merged.update({key: value for key, value in event_record.items() if value not in (None, "")})
+        return merged
+    return event_record or lineup_record
+
+
+def plate_result_label(event: RelayEvent | None, player: dict[str, Any] | None = None) -> str:
+    return _plate_result_label(event, player or {})
+
+
 def plate_result_history(
     events: list[RelayEvent],
     event: RelayEvent,
@@ -516,7 +538,7 @@ def plate_result_history(
         if candidate.batter_code != event.batter_code or not is_batter_result_event(candidate):
             continue
         label_player = (player_record or {}) if candidate.event_id == event.event_id else {}
-        label = _plate_result_label(candidate, label_player)
+        label = plate_result_label(candidate, label_player)
         if label:
             labels.append(label)
     return labels
@@ -634,7 +656,7 @@ def format_batter_snapshot(
         "|",
         f"{_to_int(player.get('hit'))}-{_to_int(player.get('ab'))}",
     ]
-    result = " ".join(plate_results or []) if plate_results else _plate_result_label(event, player) if event else ""
+    result = " ".join(plate_results or []) if plate_results else plate_result_label(event, player) if event else ""
     if result:
         parts += ["|", result]
     return " ".join(parts)

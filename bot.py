@@ -12,6 +12,7 @@ from naver_api import NaverSportsClient, unwrap
 from naver_weather import NaverWeatherClient
 from parser import (
     changed_pitcher_lines,
+    current_player_record,
     expected_batters_message,
     find_previous_plate_event,
     format_game_highlights,
@@ -23,15 +24,16 @@ from parser import (
     half_key,
     has_starting_lineups,
     is_game_over,
+    is_batter_result_event,
     is_kia_batting,
     is_kia_batter_event,
     kia_half_summary_message,
     lineup_media_items,
     parse_game_summary,
     parse_relay_events,
+    plate_result_label,
     plate_result_history,
     player_photo_url,
-    relay_player_record,
     should_send_relay_event,
     team_in_game,
 )
@@ -814,6 +816,10 @@ def dispatch_relay_events(
     home_code: str,
 ) -> set:
     for event in events_to_send:
+        player_record = current_player_record(relay, event)
+        if is_kia_batting(event, home_code, away_code, settings.team_code) and is_batter_result_event(event):
+            remember_plate_result(state, event, player_record)
+
         if event.is_attack_start:
             pitcher_lines = []
             if is_kia_batting(event, home_code, away_code, settings.team_code):
@@ -858,8 +864,8 @@ def dispatch_relay_events(
             continue
 
         previous_plate = find_previous_plate_event(all_events, event)
-        player_record = relay_player_record(relay, event)
-        plate_results = plate_result_history(all_events, event, player_record)
+        player_record = with_state_plate_totals(player_record, state_plate_results(state, event.batter_code))
+        plate_results = state_plate_labels(state, event.batter_code) or plate_result_history(all_events, event, player_record)
         message = format_relay_event_with_context(event, away_name, home_name, previous_plate, player_record, plate_results)
         photo = None
         if is_kia_batter_event(event, home_code, away_code, settings.team_code):
@@ -871,6 +877,75 @@ def dispatch_relay_events(
         else:
             telegram.send_message(message)
     return sent_summaries
+
+
+def remember_plate_result(state: dict[str, Any], event, player_record: dict[str, Any]) -> None:
+    if not event.batter_code:
+        return
+    player_for_label = player_record.copy()
+    totals = state.setdefault("plateResultTotals", {})
+    batter_totals = totals.setdefault(str(event.batter_code), {})
+    previous_rbi = _int_like(batter_totals.get("rbi"))
+    current_rbi = _int_like(player_record.get("rbi"))
+    player_for_label["rbi"] = max(0, current_rbi - previous_rbi)
+    label = plate_result_label(event, player_for_label)
+    if not label:
+        return
+    if current_rbi > previous_rbi:
+        batter_totals["rbi"] = current_rbi
+    histories = state.setdefault("plateResultHistories", {})
+    history = histories.setdefault(str(event.batter_code), [])
+    event_id = int(event.event_id)
+    if any(int(item.get("eventId") or 0) == event_id for item in history):
+        return
+    history.append({"eventId": event_id, "label": label})
+    history.sort(key=lambda item: int(item.get("eventId") or 0))
+
+
+def state_plate_results(state: dict[str, Any], batter_code: str | None) -> list[dict[str, Any]]:
+    if not batter_code:
+        return []
+    return list((state.get("plateResultHistories") or {}).get(str(batter_code), []))
+
+
+def state_plate_labels(state: dict[str, Any], batter_code: str | None) -> list[str]:
+    return [str(item.get("label")) for item in state_plate_results(state, batter_code) if item.get("label")]
+
+
+def with_state_plate_totals(player_record: dict[str, Any], history: list[dict[str, Any]]) -> dict[str, Any]:
+    if not player_record or not history:
+        return player_record
+    hits = 0
+    at_bats = 0
+    for item in history:
+        label = str(item.get("label") or "")
+        if is_plate_history_hit(label):
+            hits += 1
+            at_bats += 1
+        elif is_plate_history_at_bat(label):
+            at_bats += 1
+    if not at_bats:
+        return player_record
+    adjusted = player_record.copy()
+    adjusted["hit"] = max(_int_like(adjusted.get("hit")), hits)
+    adjusted["ab"] = max(_int_like(adjusted.get("ab")), at_bats)
+    return adjusted
+
+
+def is_plate_history_hit(label: str) -> bool:
+    return any(token in label for token in ("안타", "2루타", "3루타", "홈런"))
+
+
+def is_plate_history_at_bat(label: str) -> bool:
+    no_at_bat = ("볼넷", "사구", "희생플라이", "희생번트")
+    return bool(label) and not any(token in label for token in no_at_bat)
+
+
+def _int_like(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def handle_telegram_commands(
