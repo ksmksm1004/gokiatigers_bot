@@ -14,6 +14,7 @@ from bot import (
     resume_relay_for_game,
     send_due_kia_news,
     send_game_end_record_once,
+    send_kia_news_command,
 )
 from config import Settings
 
@@ -114,6 +115,35 @@ class KiaNewsScheduleTest(unittest.TestCase):
         self.assertIn("KIA 경기 후속 기사", joined)
         self.assertEqual(state["kiaNewsSentGameId"], "game1")
         self.assertNotIn("nextKiaNewsAt", state)
+
+    def test_news_command_sends_up_to_ten_deduplicated_articles(self):
+        section_news = [
+            {
+                "oid": f"{idx:03d}",
+                "aid": str(idx),
+                "title": f"KIA 기사 {idx}",
+                "sourceName": "OSEN",
+                "sportsSection": "kbaseball",
+            }
+            for idx in range(12)
+        ]
+        section_news.append(section_news[0].copy())
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            telegram = FakeTelegram()
+            send_kia_news_command(FakeClient(section_news=section_news), telegram, settings, None)
+
+        message = telegram.messages[-1]
+        self.assertIn("KIA 주요 기사", message)
+        self.assertIn("10. KIA 기사 9", message)
+        self.assertNotIn("11. KIA 기사 10", message)
 
 
 class FinalScoreTest(unittest.TestCase):

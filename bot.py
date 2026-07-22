@@ -64,6 +64,8 @@ BOT_COMMANDS = [
     ("/hitterrecord", "KBO 타자 주요 기록 확인"),
     ("/투수기록", "KBO 투수 주요 기록 확인"),
     ("/pitcherrecord", "KBO 투수 주요 기록 확인"),
+    ("/뉴스", "KIA 주요 기사 확인"),
+    ("/news", "KIA 주요 기사 확인"),
     ("/날씨", "오늘 KIA 경기 구장 날씨 확인"),
     ("/weather", "오늘 KIA 경기 구장 날씨 확인"),
     ("/gg", "오늘 경기 중계 중단 후 종료 결과만 받기"),
@@ -80,6 +82,7 @@ TELEGRAM_MENU_COMMANDS = [
     ("/teamrecord", "KBO 팀 주요 기록 확인"),
     ("/hitterrecord", "KBO 타자 주요 기록 확인"),
     ("/pitcherrecord", "KBO 투수 주요 기록 확인"),
+    ("/news", "KIA 주요 기사 확인"),
     ("/weather", "오늘 KIA 경기 구장 날씨"),
     ("/gg", "오늘 경기 중계 중단"),
     ("/re", "오늘 경기 중계 재개"),
@@ -1139,6 +1142,8 @@ def handle_telegram_commands(
                     send_selected_record_stats(client, telegram, settings, "pitcher", option)
                     continue
                 send_record_options(telegram, settings, state, "pitcher")
+            elif command in {"/뉴스", "/news"}:
+                send_kia_news_command(client, telegram, settings, game_id)
             elif command in {"/날씨", "/weather"}:
                 if not game_id:
                     telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
@@ -1261,14 +1266,32 @@ def send_due_kia_news(
     return False
 
 
-def fetch_kia_news_articles(client: NaverSportsClient, game_id: str, now: datetime) -> list[dict[str, Any]]:
-    game_news = unwrap(client.game_news(game_id, page_size=20), "newsList")
+def fetch_kia_news_articles(
+    client: NaverSportsClient,
+    game_id: str | None,
+    now: datetime,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    game_news = unwrap(client.game_news(game_id, page_size=20), "newsList") if game_id else []
     section_news_today = unwrap(
         client.section_news("kbaseball", page_size=40, date_yyyymmdd=now.strftime("%Y%m%d")),
         "newsList",
     )
     section_news_latest = unwrap(client.section_news("kbaseball", page_size=40), "newsList")
-    return kia_news_articles(game_news, section_news_today, section_news_latest, limit=5)
+    return kia_news_articles(game_news, section_news_today, section_news_latest, limit=limit)
+
+
+def send_kia_news_command(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    game_id: str | None,
+) -> None:
+    articles = fetch_kia_news_articles(client, game_id, datetime.now(settings.timezone), limit=10)
+    if not articles:
+        telegram.send_message("KIA 관련 기사를 아직 찾지 못했습니다.")
+        return
+    telegram.send_message(format_kia_news_articles(articles))
 
 
 def refresh_game_status_from_schedule(
