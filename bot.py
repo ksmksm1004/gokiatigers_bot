@@ -1236,12 +1236,13 @@ def sleep_with_command_polling(
     state: dict[str, Any],
     seconds: int,
 ) -> None:
-    remaining = max(0, seconds)
+    deadline = datetime.now(settings.timezone) + timedelta(seconds=max(0, seconds))
+    remaining = max(0, int((deadline - datetime.now(settings.timezone)).total_seconds()))
     while remaining > 0:
         chunk = min(remaining, 5)
         time.sleep(chunk)
-        remaining -= chunk
         handle_telegram_commands(client, weather_client, telegram, settings, state, current_game_id(state))
+        remaining = max(0, int((deadline - datetime.now(settings.timezone)).total_seconds()))
 
 
 def main() -> None:
@@ -1346,6 +1347,12 @@ def main() -> None:
             if not is_after_game_start(summary, settings, now):
                 sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.pregame_poll_seconds)
                 continue
+
+            if state.get("lineupSentGameId") != summary.game_id:
+                try:
+                    send_lineup_once(client, telegram, settings, state, summary.game_id)
+                except Exception:
+                    logging.exception("Late lineup check failed. Continuing relay polling.")
 
             if state.get("relayStoppedGameId") == summary.game_id:
                 handled = finish_stopped_relay_game_if_done(
