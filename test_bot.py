@@ -12,16 +12,19 @@ from bot import (
     option_from_callback_data,
     record_options_keyboard,
     resume_relay_for_game,
+    send_due_kia_news,
     send_game_end_record_once,
 )
 from config import Settings
 
 
 class FakeClient:
-    def __init__(self, record=None, relay=None, games=None):
+    def __init__(self, record=None, relay=None, games=None, game_news=None, section_news=None):
         self._record = record
         self._relay = relay or {"textRelays": []}
         self._games = games or []
+        self._game_news = game_news or []
+        self._section_news = section_news or []
         self.record_calls = 0
 
     def record(self, game_id):
@@ -33,6 +36,12 @@ class FakeClient:
 
     def games_on(self, day):
         return self._games
+
+    def game_news(self, game_id, page_size=10):
+        return {"result": {"newsList": self._game_news}}
+
+    def section_news(self, section_id="kbaseball", page_size=40, date_yyyymmdd=None):
+        return {"result": {"newsList": self._section_news}}
 
 
 class FakeTelegram:
@@ -57,6 +66,54 @@ class RecordOptionCallbackTest(unittest.TestCase):
         self.assertEqual(keyboard["inline_keyboard"][0][0]["text"], "타율")
         self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], "rec:hitter:0")
         self.assertEqual(option_from_callback_data("rec:hitter:1"), ("hitter", "홈런"))
+
+
+class KiaNewsScheduleTest(unittest.TestCase):
+    def test_game_end_record_schedules_and_sends_kia_news(self):
+        record = {
+            "gameInfo": {"aName": "한화", "hName": "KIA", "aCode": "HH", "hCode": "HT"},
+            "battersBoxscore": {"awayTotal": {"run": 7}, "homeTotal": {"run": 3}, "away": [], "home": []},
+            "teamPitchingBoxscore": {"home": {}},
+            "pitchersBoxscore": {"away": [], "home": []},
+        }
+        game_news = [
+            {
+                "oid": "109",
+                "aid": "1",
+                "title": "KIA 경기 후속 기사",
+                "sourceName": "OSEN",
+                "sportsSection": "kbaseball",
+            }
+        ]
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            state = {}
+            telegram = FakeTelegram()
+            client = FakeClient(record, game_news=game_news)
+
+            send_game_end_record_once(client, telegram, settings, state, "game1", "한화", "KIA", 7, 3)
+            state["nextKiaNewsAt"] = datetime(2026, 7, 22, 23, 0, tzinfo=settings.timezone).isoformat()
+            sent = send_due_kia_news(
+                client,
+                telegram,
+                settings,
+                state,
+                datetime(2026, 7, 22, 23, 1, tzinfo=settings.timezone),
+            )
+
+        self.assertTrue(sent)
+        joined = "\n".join(telegram.messages)
+        self.assertIn("KIA 주요 기사", joined)
+        self.assertIn("KIA 경기 후속 기사", joined)
+        self.assertEqual(state["kiaNewsSentGameId"], "game1")
+        self.assertNotIn("nextKiaNewsAt", state)
 
 
 class FinalScoreTest(unittest.TestCase):

@@ -43,6 +43,28 @@ class NaverSportsClient:
     def record(self, game_id: str) -> dict[str, Any]:
         return self.get_json(f"/schedule/games/{game_id}/record")
 
+    def game_news(self, game_id: str, page_size: int = 10) -> dict[str, Any]:
+        return self.get_json(
+            f"/news/game/{game_id}",
+            params={"isPhoto": "N", "page": 1, "pageSize": page_size},
+        )
+
+    def section_news(
+        self,
+        section_id: str = "kbaseball",
+        page_size: int = 40,
+        date_yyyymmdd: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "sort": "latest",
+            "page": 1,
+            "pageSize": page_size,
+            "isPhoto": "N",
+        }
+        if date_yyyymmdd:
+            params["date"] = date_yyyymmdd
+        return self.get_json(f"/news/articles/{section_id}", params=params)
+
     def calendar(self, day: date) -> dict[str, Any]:
         return self.get_json(
             "/schedule/calendar",

@@ -902,6 +902,34 @@ def format_player_record_stats(rows: list[dict[str, Any]], record_type: str, opt
     return "\n".join(lines)
 
 
+def kia_news_articles(*article_lists: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
+    articles: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for article_list in article_lists:
+        for article in article_list:
+            if not _is_kia_article(article):
+                continue
+            key = (str(article.get("oid") or article.get("officeId") or ""), str(article.get("aid") or article.get("articleId") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            articles.append(article)
+            if len(articles) >= limit:
+                return articles
+    return articles
+
+
+def format_kia_news_articles(articles: list[dict[str, Any]]) -> str:
+    lines = ["KIA 주요 기사"]
+    for idx, article in enumerate(articles, 1):
+        title = str(article.get("title") or "-")
+        source = str(article.get("sourceName") or article.get("officeName") or "").strip()
+        source_text = f" ({source})" if source else ""
+        lines.append(f"{idx}. {title}{source_text}")
+        lines.append(_article_url(article))
+    return "\n".join(lines)
+
+
 def format_pitching_decisions(record: dict[str, Any], away_name: str, home_name: str, away_score: int, home_score: int) -> str:
     pitchers = record.get("pitchersBoxscore", {})
     by_result: dict[str, list[str]] = {"승": [], "패": [], "세": [], "홀": []}
@@ -1045,6 +1073,20 @@ def _is_qualified(row: dict[str, Any]) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().upper() in {"Y", "TRUE", "1"}
+
+
+def _is_kia_article(article: dict[str, Any]) -> bool:
+    title = str(article.get("title") or "")
+    return "KIA" in title.upper() or "기아" in title
+
+
+def _article_url(article: dict[str, Any]) -> str:
+    oid = article.get("oid") or article.get("officeId")
+    aid = article.get("aid") or article.get("articleId")
+    section = article.get("sportsSection") or "kbaseball"
+    if oid and aid:
+        return f"https://m.sports.naver.com/{section}/article/{oid}/{aid}"
+    return "https://m.sports.naver.com/kbaseball/news"
 
 
 def _format_record_value(value: Any, suffix: str = "", precision: Any = None) -> str:

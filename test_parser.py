@@ -5,10 +5,12 @@ from parser import (
     changed_pitcher_lines,
     expected_batters_message,
     format_batter_summary_stats,
+    format_kia_news_articles,
     format_player_record_stats,
     format_relay_event,
     format_relay_event_with_context,
     format_team_record_stats,
+    kia_news_articles,
     plate_result_history,
     record_options_message,
     resolve_record_option,
@@ -124,6 +126,27 @@ class RecordStatsFormatTest(unittest.TestCase):
         self.assertIn("1. 타율", record_options_message("team"))
         self.assertEqual(resolve_record_option("team", "타율 알려줘"), "타율")
         self.assertEqual(resolve_record_option("hitter", "ops"), "OPS")
+
+
+class KiaNewsFormatTest(unittest.TestCase):
+    def test_kia_news_articles_filter_title_and_deduplicate(self):
+        game_news = [
+            {"oid": "001", "aid": "1", "title": "KIA 타선 폭발", "sourceName": "A", "sportsSection": "kbaseball"},
+            {"oid": "001", "aid": "2", "title": "한화 선발 호투", "sourceName": "B", "sportsSection": "kbaseball"},
+        ]
+        section_news = [
+            {"oid": "001", "aid": "1", "title": "KIA 타선 폭발", "sourceName": "A", "sportsSection": "kbaseball"},
+            {"oid": "002", "aid": "3", "title": "기아 불펜 점검", "sourceName": "C", "sportsSection": "kbaseball"},
+        ]
+
+        articles = kia_news_articles(game_news, section_news, limit=5)
+        message = format_kia_news_articles(articles)
+
+        self.assertEqual([article["aid"] for article in articles], ["1", "3"])
+        self.assertIn("KIA 주요 기사", message)
+        self.assertIn("1. KIA 타선 폭발 (A)", message)
+        self.assertIn("https://m.sports.naver.com/kbaseball/article/001/1", message)
+        self.assertIn("2. 기아 불펜 점검 (C)", message)
 
 
 class CompactBatterFormatTest(unittest.TestCase):
