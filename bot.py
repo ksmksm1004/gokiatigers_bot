@@ -503,9 +503,10 @@ def send_team_rankings(
     telegram.send_message(format_team_rankings({"seasonTeamStats": rankings}, {"seasonTeamLastTenGameStats": last_ten}))
 
 
-def send_record_options(telegram: TelegramBot, state: dict[str, Any], record_type: str) -> None:
+def send_record_options(telegram: TelegramBot, settings: Settings, state: dict[str, Any], record_type: str) -> None:
     state["pendingRecordCommand"] = record_type
     telegram.send_message(record_options_message(record_type))
+    save_state(settings.state_path, state)
 
 
 def send_selected_record_stats(
@@ -1058,11 +1059,11 @@ def handle_telegram_commands(
             elif command in {"/순위", "/rank"}:
                 send_team_rankings(client, telegram, settings)
             elif command in {"/팀기록", "/teamrecord"}:
-                send_record_options(telegram, state, "team")
+                send_record_options(telegram, settings, state, "team")
             elif command in {"/타자기록", "/hitterrecord"}:
-                send_record_options(telegram, state, "hitter")
+                send_record_options(telegram, settings, state, "hitter")
             elif command in {"/투수기록", "/pitcherrecord"}:
-                send_record_options(telegram, state, "pitcher")
+                send_record_options(telegram, settings, state, "pitcher")
             elif command in {"/날씨", "/weather"}:
                 if not game_id:
                     telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
@@ -1371,6 +1372,7 @@ def main() -> None:
                     "nextDailyRankingCheckAt": state.get("nextDailyRankingCheckAt"),
                     "nextPreviewCheckAt": state.get("nextPreviewCheckAt"),
                     "relayStoppedGameId": state.get("relayStoppedGameId"),
+                    "pendingRecordCommand": state.get("pendingRecordCommand"),
                 }
                 save_state(settings.state_path, state)
 
