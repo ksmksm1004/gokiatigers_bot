@@ -18,12 +18,20 @@ class TelegramBot:
     def base_url(self) -> str:
         return f"https://api.telegram.org/bot{self.token}"
 
-    def send_message(self, text: str) -> None:
+    def send_message(self, text: str, reply_markup: dict[str, Any] | None = None) -> None:
         if self.dry_run:
             logging.info("[DRY_RUN] Telegram message:\n%s", text)
             print(text)
             return
-        self._post("sendMessage", {"chat_id": self.chat_id, "text": text, "disable_web_page_preview": False})
+        payload: dict[str, Any] = {"chat_id": self.chat_id, "text": text, "disable_web_page_preview": False}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        self._post("sendMessage", payload)
+
+    def answer_callback_query(self, callback_query_id: str) -> None:
+        if self.dry_run:
+            return
+        self._post("answerCallbackQuery", {"callback_query_id": callback_query_id})
 
     def send_photo(self, photo_url: str, caption: str) -> None:
         if self.dry_run:

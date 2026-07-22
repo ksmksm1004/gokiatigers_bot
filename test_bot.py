@@ -9,6 +9,8 @@ from bot import (
     final_score_from_record,
     finish_stopped_relay_game_if_done,
     format_team_schedule,
+    option_from_callback_data,
+    record_options_keyboard,
     resume_relay_for_game,
     send_game_end_record_once,
 )
@@ -37,13 +39,24 @@ class FakeTelegram:
     def __init__(self):
         self.messages = []
         self.photos = []
+        self.reply_markups = []
 
-    def send_message(self, text):
+    def send_message(self, text, reply_markup=None):
         self.messages.append(text)
+        self.reply_markups.append(reply_markup)
 
     def send_photo(self, photo_url, caption):
         self.photos.append((photo_url, caption))
         self.messages.append(caption)
+
+
+class RecordOptionCallbackTest(unittest.TestCase):
+    def test_record_options_keyboard_uses_short_callback_data(self):
+        keyboard = record_options_keyboard("hitter")
+
+        self.assertEqual(keyboard["inline_keyboard"][0][0]["text"], "타율")
+        self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], "rec:hitter:0")
+        self.assertEqual(option_from_callback_data("rec:hitter:1"), ("hitter", "홈런"))
 
 
 class FinalScoreTest(unittest.TestCase):

@@ -24,6 +24,7 @@ from parser import (
     format_team_rankings,
     HITTER_RECORD_OPTIONS,
     PITCHER_RECORD_OPTIONS,
+    TEAM_RECORD_OPTIONS,
     format_relay_event_with_context,
     half_key,
     has_starting_lineups,
@@ -505,8 +506,42 @@ def send_team_rankings(
 
 def send_record_options(telegram: TelegramBot, settings: Settings, state: dict[str, Any], record_type: str) -> None:
     state["pendingRecordCommand"] = record_type
-    telegram.send_message(record_options_message(record_type))
+    telegram.send_message(record_options_message(record_type), reply_markup=record_options_keyboard(record_type))
     save_state(settings.state_path, state)
+
+
+def record_options_keyboard(record_type: str) -> dict[str, Any]:
+    labels = record_option_labels(record_type)
+    buttons = [
+        {"text": label, "callback_data": f"rec:{record_type}:{idx}"}
+        for idx, label in enumerate(labels)
+    ]
+    return {"inline_keyboard": [buttons[index : index + 3] for index in range(0, len(buttons), 3)]}
+
+
+def record_option_labels(record_type: str) -> list[str]:
+    if record_type == "team":
+        return list(TEAM_RECORD_OPTIONS)
+    if record_type == "hitter":
+        return list(HITTER_RECORD_OPTIONS)
+    if record_type == "pitcher":
+        return list(PITCHER_RECORD_OPTIONS)
+    return []
+
+
+def option_from_callback_data(data: str) -> tuple[str, str] | None:
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != "rec":
+        return None
+    record_type = parts[1]
+    try:
+        option_index = int(parts[2])
+    except ValueError:
+        return None
+    labels = record_option_labels(record_type)
+    if option_index < 0 or option_index >= len(labels):
+        return None
+    return record_type, labels[option_index]
 
 
 def send_selected_record_stats(
@@ -1017,12 +1052,35 @@ def handle_telegram_commands(
 
     for update in updates:
         state["telegramUpdateOffset"] = max(int(state.get("telegramUpdateOffset") or 0), int(update["update_id"]) + 1)
+        callback = update.get("callback_query") or {}
+        if callback:
+            callback_message = callback.get("message") or {}
+            callback_chat = callback_message.get("chat", {})
+            if str(callback_chat.get("id")) != str(settings.telegram_chat_id):
+                continue
+            try:
+                data = str(callback.get("data") or "")
+                selected = option_from_callback_data(data)
+                if selected:
+                    record_type, option = selected
+                    state.pop("pendingRecordCommand", None)
+                    telegram.answer_callback_query(str(callback.get("id") or ""))
+                    send_selected_record_stats(client, telegram, settings, record_type, option)
+                else:
+                    telegram.answer_callback_query(str(callback.get("id") or ""))
+                continue
+            except Exception:
+                logging.exception("Telegram callback failed: %s", callback.get("data"))
+                telegram.send_message("명령 처리 중 오류가 발생했습니다. logs/bot.log를 확인해주세요.")
+                continue
+
         message = update.get("message") or update.get("channel_post") or {}
         chat = message.get("chat", {})
         if str(chat.get("id")) != str(settings.telegram_chat_id):
             continue
         text = str(message.get("text") or "").strip()
         command = text.split()[0].split("@")[0] if text else ""
+        command_arg = text[len(text.split()[0]) :].strip() if text else ""
         try:
             pending_record_type = state.get("pendingRecordCommand")
             if pending_record_type and command not in {
@@ -1059,10 +1117,25 @@ def handle_telegram_commands(
             elif command in {"/순위", "/rank"}:
                 send_team_rankings(client, telegram, settings)
             elif command in {"/팀기록", "/teamrecord"}:
+                option = resolve_record_option("team", command_arg)
+                if option:
+                    state.pop("pendingRecordCommand", None)
+                    send_selected_record_stats(client, telegram, settings, "team", option)
+                    continue
                 send_record_options(telegram, settings, state, "team")
             elif command in {"/타자기록", "/hitterrecord"}:
+                option = resolve_record_option("hitter", command_arg)
+                if option:
+                    state.pop("pendingRecordCommand", None)
+                    send_selected_record_stats(client, telegram, settings, "hitter", option)
+                    continue
                 send_record_options(telegram, settings, state, "hitter")
             elif command in {"/투수기록", "/pitcherrecord"}:
+                option = resolve_record_option("pitcher", command_arg)
+                if option:
+                    state.pop("pendingRecordCommand", None)
+                    send_selected_record_stats(client, telegram, settings, "pitcher", option)
+                    continue
                 send_record_options(telegram, settings, state, "pitcher")
             elif command in {"/날씨", "/weather"}:
                 if not game_id:
