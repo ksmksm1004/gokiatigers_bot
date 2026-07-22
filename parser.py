@@ -766,7 +766,8 @@ def format_kia_record(record: dict[str, Any], team_code: str = KIA_CODE) -> str:
     ]
 
     for player in pitchers:
-        result = f" {player.get('wls')}" if player.get("wls") else ""
+        decision = _pitching_decision(player) or _pitching_result_for_player(record, player)
+        result = f" {decision}" if decision else ""
         lines.append(f"{player.get('name', '-')}{result} | {_pitcher_stats_text(player)}")
 
     return "\n".join(lines)
@@ -904,19 +905,48 @@ def format_player_record_stats(rows: list[dict[str, Any]], record_type: str, opt
 def format_pitching_decisions(record: dict[str, Any], away_name: str, home_name: str, away_score: int, home_score: int) -> str:
     pitchers = record.get("pitchersBoxscore", {})
     by_result: dict[str, list[str]] = {"승": [], "패": [], "세": [], "홀": []}
+    seen: set[tuple[str, str]] = set()
+    for player in record.get("pitchingResult", []):
+        _append_pitching_decision(by_result, seen, player)
     for side in ("away", "home"):
         for player in pitchers.get(side, []):
-            result = _pitching_decision(player)
-            if result == "승":
-                by_result["승"].append(f"승리투수: {player.get('name', '-')}")
-            elif result == "패":
-                by_result["패"].append(f"패전투수: {player.get('name', '-')}")
-            elif result == "세":
-                by_result["세"].append(f"세이브: {player.get('name', '-')}")
-            elif result == "홀":
-                by_result["홀"].append(f"홀드: {player.get('name', '-')}")
+            _append_pitching_decision(by_result, seen, player)
     decisions = by_result["승"] + by_result["패"] + by_result["세"] + by_result["홀"]
     return "\n".join(["중계 | 경기종료", f"{away_name} {away_score} : {home_score} {home_name}", *decisions])
+
+
+def _append_pitching_decision(
+    by_result: dict[str, list[str]],
+    seen: set[tuple[str, str]],
+    player: dict[str, Any],
+) -> None:
+    result = _pitching_decision(player)
+    if not result:
+        return
+    name = str(player.get("name") or "-")
+    key = (result, name)
+    if key in seen:
+        return
+    seen.add(key)
+    if result == "승":
+        by_result["승"].append(f"승리투수: {name}")
+    elif result == "패":
+        by_result["패"].append(f"패전투수: {name}")
+    elif result == "세":
+        by_result["세"].append(f"세이브: {name}")
+    elif result == "홀":
+        by_result["홀"].append(f"홀드: {name}")
+
+
+def _pitching_result_for_player(record: dict[str, Any], player: dict[str, Any]) -> str:
+    pcode = str(player.get("pcode") or player.get("pCode") or "")
+    name = str(player.get("name") or "")
+    for result in record.get("pitchingResult", []):
+        result_pcode = str(result.get("pCode") or result.get("pcode") or "")
+        result_name = str(result.get("name") or "")
+        if (pcode and result_pcode == pcode) or (name and result_name == name):
+            return _pitching_decision(result)
+    return ""
 
 
 def _pitching_decision(player: dict[str, Any]) -> str:

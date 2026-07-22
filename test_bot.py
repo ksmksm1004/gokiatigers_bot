@@ -112,6 +112,52 @@ class FinalScoreTest(unittest.TestCase):
         self.assertIn("세이브: 정해영", joined)
         self.assertIn("홀드: 전상현", joined)
 
+    def test_pitching_decisions_use_pitching_result_when_boxscore_wls_is_empty(self):
+        record = {
+            "gameInfo": {"aName": "한화", "hName": "KIA", "aCode": "HH", "hCode": "HT"},
+            "battersBoxscore": {
+                "awayTotal": {"run": 7},
+                "homeTotal": {"run": 3},
+                "away": [],
+                "home": [],
+            },
+            "teamPitchingBoxscore": {"home": {}},
+            "pitchingResult": [
+                {"pCode": "55633", "name": "올러", "wls": "L"},
+                {"pCode": "56724", "name": "화이트", "wls": "W"},
+            ],
+            "pitchersBoxscore": {
+                "away": [{"name": "화이트", "wls": ""}],
+                "home": [{"name": "올러", "wls": ""}],
+            },
+        }
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            telegram = FakeTelegram()
+            send_game_end_record_once(
+                FakeClient(record),
+                telegram,
+                settings,
+                {},
+                "game1",
+                "한화",
+                "KIA",
+                7,
+                3,
+            )
+
+        joined = "\n".join(telegram.messages)
+        self.assertIn("승리투수: 화이트", joined)
+        self.assertIn("패전투수: 올러", joined)
+        self.assertIn("올러 패 |", joined)
+
     def test_stopped_relay_does_not_send_record_before_relay_game_over(self):
         record = {
             "gameInfo": {"aName": "KIA", "hName": "SSG", "aCode": "HT", "hCode": "SK"},
