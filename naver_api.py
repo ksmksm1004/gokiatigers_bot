@@ -59,6 +59,32 @@ class NaverSportsClient:
             params={"gameType": "REGULAR_SEASON"},
         )
 
+    def team_record_stats(self, season: int) -> dict[str, Any]:
+        return self.get_json(
+            f"/statistics/categories/kbo/seasons/{season}/teams",
+            params={"gameType": "REGULAR_SEASON", "page": 1, "pageSize": 10},
+        )
+
+    def player_record_stats(
+        self,
+        season: int,
+        player_type: str,
+        sort_field: str,
+        sort_direction: str,
+        page_size: int = 10,
+    ) -> dict[str, Any]:
+        return self.get_json(
+            f"/statistics/categories/kbo/seasons/{season}/players",
+            params={
+                "gameType": "REGULAR_SEASON",
+                "playerType": player_type,
+                "sortField": sort_field,
+                "sortDirection": sort_direction,
+                "page": 1,
+                "pageSize": page_size,
+            },
+        )
+
     def last_ten_games(self, season: int) -> dict[str, Any]:
         return self.get_json(
             f"/statistics/categories/kbo/seasons/{season}/teams/last-ten-games",

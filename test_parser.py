@@ -5,9 +5,13 @@ from parser import (
     changed_pitcher_lines,
     expected_batters_message,
     format_batter_summary_stats,
+    format_player_record_stats,
     format_relay_event,
     format_relay_event_with_context,
+    format_team_record_stats,
     plate_result_history,
+    record_options_message,
+    resolve_record_option,
     should_send_relay_event,
 )
 from parser import format_preview
@@ -57,6 +61,44 @@ class FormatPreviewTest(unittest.TestCase):
         self.assertIn("KIA: 승 무 승 패 패", message)
         self.assertIn("상대: 패 승 승 패 승", message)
         self.assertIn("KIA 6승 1무 2패", message)
+
+
+class RecordStatsFormatTest(unittest.TestCase):
+    def test_team_record_stats_sort_by_selected_metric(self):
+        rows = [
+            {"teamName": "KIA", "offenseHra": 0.26844, "offenseHit": 848},
+            {"teamName": "KT", "offenseHra": 0.28132, "offenseHit": 860},
+            {"teamName": "삼성", "offenseHra": 0.27713, "offenseHit": 858},
+        ]
+
+        message = format_team_record_stats(rows, "타율")
+
+        self.assertIn("KBO 팀 기록 | 타율", message)
+        self.assertLess(message.index("1. KT"), message.index("2. 삼성"))
+        self.assertLess(message.index("2. 삼성"), message.index("3. KIA"))
+        self.assertIn("0.281", message)
+
+    def test_player_record_stats_recomputes_tied_ranks(self):
+        rows = [
+            {"playerName": "오스틴", "teamName": "LG", "hitterHr": 28},
+            {"playerName": "김도영", "teamName": "KIA", "hitterHr": 27},
+            {"playerName": "강백호", "teamName": "KT", "hitterHr": 23},
+            {"playerName": "힐리어드", "teamName": "한화", "hitterHr": 23},
+            {"playerName": "최정", "teamName": "SSG", "hitterHr": 20},
+        ]
+
+        message = format_player_record_stats(rows, "hitter", "홈런")
+
+        self.assertIn("1. 오스틴 (LG) | 28개", message)
+        self.assertIn("3. 강백호 (KT) | 23개", message)
+        self.assertIn("3. 힐리어드 (한화) | 23개", message)
+        self.assertIn("5. 최정 (SSG) | 20개", message)
+
+    def test_record_option_prompt_and_resolution(self):
+        self.assertIn("1. 타율", record_options_message("team"))
+        self.assertEqual(resolve_record_option("team", "타율 알려줘"), "타율")
+        self.assertEqual(resolve_record_option("hitter", "ops"), "OPS")
+
 
 class CompactBatterFormatTest(unittest.TestCase):
     def test_relay_batter_snapshot_uses_short_result_format(self):

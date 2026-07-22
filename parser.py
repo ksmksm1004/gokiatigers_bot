@@ -823,6 +823,82 @@ def format_team_rankings(rankings: dict[str, Any], last_ten: dict[str, Any]) -> 
     return "\n".join(lines)
 
 
+TEAM_RECORD_OPTIONS = {
+    "타율": {"field": "offenseHra", "direction": "desc", "suffix": "", "precision": 3, "extra": "offenseHit", "extra_label": "안타"},
+    "평균자책": {"field": "defenseEra", "direction": "asc", "suffix": "", "extra": "defenseInning", "extra_label": "이닝"},
+    "홈런": {"field": "offenseHr", "direction": "desc", "suffix": "개", "extra": "offenseSlg", "extra_label": "장타율"},
+    "안타": {"field": "offenseHit", "direction": "desc", "suffix": "개", "extra": "offenseHra", "extra_label": "타율"},
+    "도루": {"field": "offenseSb", "direction": "desc", "suffix": "개", "extra": "offenseHra", "extra_label": "타율"},
+    "득점": {"field": "offenseRun", "direction": "desc", "suffix": "점", "extra": "offenseHra", "extra_label": "타율"},
+    "실점": {"field": "defenseR", "direction": "asc", "suffix": "점", "extra": "defenseEra", "extra_label": "평균자책"},
+}
+
+HITTER_RECORD_OPTIONS = {
+    "타율": {"field": "hitterHra", "direction": "desc", "suffix": "", "precision": 3},
+    "홈런": {"field": "hitterHr", "direction": "desc", "suffix": "개"},
+    "타점": {"field": "hitterRbi", "direction": "desc", "suffix": "점"},
+    "도루": {"field": "hitterSb", "direction": "desc", "suffix": "개"},
+    "OPS": {"field": "hitterOps", "direction": "desc", "suffix": "", "precision": 3},
+    "WAR": {"field": "hitterWar", "direction": "desc", "suffix": ""},
+}
+
+PITCHER_RECORD_OPTIONS = {
+    "승": {"field": "pitcherWin", "direction": "desc", "suffix": "승"},
+    "평균자책": {"field": "pitcherEra", "direction": "asc", "suffix": ""},
+    "탈삼진": {"field": "pitcherKk", "direction": "desc", "suffix": "개"},
+    "세이브": {"field": "pitcherSave", "direction": "desc", "suffix": "개"},
+    "WHIP": {"field": "pitcherWhip", "direction": "asc", "suffix": ""},
+    "WAR": {"field": "pitcherWar", "direction": "desc", "suffix": ""},
+}
+
+
+def record_options_message(record_type: str) -> str:
+    labels = _record_option_labels(record_type)
+    title = {"team": "팀기록", "hitter": "타자기록", "pitcher": "투수기록"}.get(record_type, "기록")
+    lines = [f"{title} 중 알고 싶은게 있으세요?"]
+    lines.extend(f"{idx}. {label}" for idx, label in enumerate(labels, 1))
+    return "\n".join(lines)
+
+
+def resolve_record_option(record_type: str, text: str) -> str | None:
+    query = text.strip().upper()
+    for label in _record_option_labels(record_type):
+        if query == label.upper() or query == f"{label.upper()} 알려줘":
+            return label
+    return None
+
+
+def format_team_record_stats(rows: list[dict[str, Any]], option: str) -> str:
+    config = TEAM_RECORD_OPTIONS[option]
+    field = str(config["field"])
+    reverse = config.get("direction") == "desc"
+    sorted_rows = sorted(rows, key=lambda row: _to_float(row.get(field)), reverse=reverse)
+    ranked = _rank_rows(sorted_rows, field)
+
+    lines = [f"KBO 팀 기록 | {option}"]
+    for rank, row in ranked:
+        value = _format_record_value(row.get(field), str(config.get("suffix", "")), config.get("precision"))
+        extra = _format_extra_record(row, str(config.get("extra", "")), str(config.get("extra_label", "")))
+        lines.append(f"{rank}. {row.get('teamName', '-')} | {value}{extra}")
+    return "\n".join(lines)
+
+
+def format_player_record_stats(rows: list[dict[str, Any]], record_type: str, option: str, limit: int = 10) -> str:
+    options = HITTER_RECORD_OPTIONS if record_type == "hitter" else PITCHER_RECORD_OPTIONS
+    config = options[option]
+    field = str(config["field"])
+    reverse = config.get("direction") == "desc"
+    sorted_rows = sorted(rows, key=lambda row: _to_float(row.get(field)), reverse=reverse)[:limit]
+    ranked = _rank_rows(sorted_rows, field)
+    title = "타자 기록" if record_type == "hitter" else "투수 기록"
+
+    lines = [f"KBO {title} | {option} TOP {limit}"]
+    for rank, row in ranked:
+        value = _format_record_value(row.get(field), str(config.get("suffix", "")), config.get("precision"))
+        lines.append(f"{rank}. {row.get('playerName', '-')} ({row.get('teamName', '-')}) | {value}")
+    return "\n".join(lines)
+
+
 def format_pitching_decisions(record: dict[str, Any], away_name: str, home_name: str, away_score: int, home_score: int) -> str:
     pitchers = record.get("pitchersBoxscore", {})
     by_result: dict[str, list[str]] = {"승": [], "패": [], "세": [], "홀": []}
@@ -900,6 +976,59 @@ def _to_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _to_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _record_option_labels(record_type: str) -> list[str]:
+    if record_type == "team":
+        return list(TEAM_RECORD_OPTIONS)
+    if record_type == "hitter":
+        return list(HITTER_RECORD_OPTIONS)
+    if record_type == "pitcher":
+        return list(PITCHER_RECORD_OPTIONS)
+    return []
+
+
+def _rank_rows(rows: list[dict[str, Any]], field: str) -> list[tuple[int, dict[str, Any]]]:
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    previous_value: Any = object()
+    current_rank = 0
+    for index, row in enumerate(rows, 1):
+        value = row.get(field)
+        if index == 1 or value != previous_value:
+            current_rank = index
+            previous_value = value
+        ranked.append((current_rank, row))
+    return ranked
+
+
+def _format_record_value(value: Any, suffix: str = "", precision: Any = None) -> str:
+    if value in (None, ""):
+        return "-"
+    if isinstance(value, float):
+        if precision is not None:
+            text = f"{value:.{int(precision)}f}"
+        else:
+            text = f"{value:.3f}" if abs(value) < 1 else f"{value:.2f}"
+            text = text.rstrip("0").rstrip(".") if "." in text and abs(value) >= 1 else text
+    else:
+        text = str(value)
+    return f"{text}{suffix}"
+
+
+def _format_extra_record(row: dict[str, Any], field: str, label: str) -> str:
+    if not field or not label:
+        return ""
+    value = row.get(field)
+    if value in (None, ""):
+        return ""
+    return f" | {label} {_format_record_value(value)}"
 
 
 def _format_innings(value: Any) -> str:

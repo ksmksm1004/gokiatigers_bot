@@ -16,10 +16,14 @@ from parser import (
     expected_batters_message,
     find_previous_plate_event,
     format_game_highlights,
+    format_player_record_stats,
     format_kia_record,
     format_pitching_decisions,
     format_preview,
+    format_team_record_stats,
     format_team_rankings,
+    HITTER_RECORD_OPTIONS,
+    PITCHER_RECORD_OPTIONS,
     format_relay_event_with_context,
     half_key,
     has_starting_lineups,
@@ -34,6 +38,8 @@ from parser import (
     plate_result_label,
     plate_result_history,
     player_photo_url,
+    record_options_message,
+    resolve_record_option,
     should_send_relay_event,
     team_in_game,
 )
@@ -49,6 +55,12 @@ BOT_COMMANDS = [
     ("/record", "오늘 KIA 경기 기록 확인"),
     ("/순위", "KBO 팀 순위 확인"),
     ("/rank", "KBO 팀 순위 확인"),
+    ("/팀기록", "KBO 팀 주요 기록 확인"),
+    ("/teamrecord", "KBO 팀 주요 기록 확인"),
+    ("/타자기록", "KBO 타자 주요 기록 확인"),
+    ("/hitterrecord", "KBO 타자 주요 기록 확인"),
+    ("/투수기록", "KBO 투수 주요 기록 확인"),
+    ("/pitcherrecord", "KBO 투수 주요 기록 확인"),
     ("/날씨", "오늘 KIA 경기 구장 날씨 확인"),
     ("/weather", "오늘 KIA 경기 구장 날씨 확인"),
     ("/gg", "오늘 경기 중계 중단 후 종료 결과만 받기"),
@@ -62,6 +74,9 @@ TELEGRAM_MENU_COMMANDS = [
     ("/schedule", "KIA 향후 경기 일정 확인"),
     ("/record", "오늘 KIA 경기 기록 확인"),
     ("/rank", "KBO 팀 순위 확인"),
+    ("/teamrecord", "KBO 팀 주요 기록 확인"),
+    ("/hitterrecord", "KBO 타자 주요 기록 확인"),
+    ("/pitcherrecord", "KBO 투수 주요 기록 확인"),
     ("/weather", "오늘 KIA 경기 구장 날씨"),
     ("/gg", "오늘 경기 중계 중단"),
     ("/re", "오늘 경기 중계 재개"),
@@ -486,6 +501,39 @@ def send_team_rankings(
     rankings = unwrap(client.team_rankings(now.year), "seasonTeamStats")
     last_ten = unwrap(client.last_ten_games(now.year), "seasonTeamLastTenGameStats")
     telegram.send_message(format_team_rankings({"seasonTeamStats": rankings}, {"seasonTeamLastTenGameStats": last_ten}))
+
+
+def send_record_options(telegram: TelegramBot, state: dict[str, Any], record_type: str) -> None:
+    state["pendingRecordCommand"] = record_type
+    telegram.send_message(record_options_message(record_type))
+
+
+def send_selected_record_stats(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    record_type: str,
+    option: str,
+) -> None:
+    now = datetime.now(settings.timezone)
+    if record_type == "team":
+        rows = unwrap(client.team_record_stats(now.year), "seasonTeamStats")
+        telegram.send_message(format_team_record_stats(rows, option))
+        return
+
+    options = HITTER_RECORD_OPTIONS if record_type == "hitter" else PITCHER_RECORD_OPTIONS
+    config = options[option]
+    rows = unwrap(
+        client.player_record_stats(
+            now.year,
+            "HITTER" if record_type == "hitter" else "PITCHER",
+            str(config["field"]),
+            str(config["direction"]),
+            page_size=50,
+        ),
+        "seasonPlayerStats",
+    )
+    telegram.send_message(format_player_record_stats(rows, record_type, option, limit=10))
 
 
 def send_team_schedule(
@@ -975,6 +1023,26 @@ def handle_telegram_commands(
         text = str(message.get("text") or "").strip()
         command = text.split()[0].split("@")[0] if text else ""
         try:
+            pending_record_type = state.get("pendingRecordCommand")
+            if pending_record_type and command not in {
+                "/팀기록",
+                "/teamrecord",
+                "/타자기록",
+                "/hitterrecord",
+                "/투수기록",
+                "/pitcherrecord",
+            }:
+                if command.startswith("/"):
+                    state.pop("pendingRecordCommand", None)
+                else:
+                    option = resolve_record_option(str(pending_record_type), text)
+                    if option:
+                        state.pop("pendingRecordCommand", None)
+                        send_selected_record_stats(client, telegram, settings, str(pending_record_type), option)
+                    else:
+                        telegram.send_message(record_options_message(str(pending_record_type)))
+                    continue
+
             if command in {"/라인업", "/lineup"}:
                 if not game_id:
                     telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
@@ -989,6 +1057,12 @@ def handle_telegram_commands(
                 send_team_schedule(client, telegram, settings, datetime.now(settings.timezone))
             elif command in {"/순위", "/rank"}:
                 send_team_rankings(client, telegram, settings)
+            elif command in {"/팀기록", "/teamrecord"}:
+                send_record_options(telegram, state, "team")
+            elif command in {"/타자기록", "/hitterrecord"}:
+                send_record_options(telegram, state, "hitter")
+            elif command in {"/투수기록", "/pitcherrecord"}:
+                send_record_options(telegram, state, "pitcher")
             elif command in {"/날씨", "/weather"}:
                 if not game_id:
                     telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
