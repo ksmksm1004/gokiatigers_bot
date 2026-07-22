@@ -94,6 +94,32 @@ class RecordStatsFormatTest(unittest.TestCase):
         self.assertIn("3. 힐리어드 (한화) | 23개", message)
         self.assertIn("5. 최정 (SSG) | 20개", message)
 
+    def test_rate_stats_exclude_unqualified_players_before_sorting(self):
+        rows = [
+            {"playerName": "최원준", "teamName": "KT", "hitterHra": 0.3577, "isQualified": True},
+            {"playerName": "레이예스", "teamName": "롯데", "hitterHra": 0.3474, "isQualified": True},
+            {"playerName": "전다민", "teamName": "두산", "hitterHra": 1.0, "isQualified": False},
+        ]
+
+        message = format_player_record_stats(rows, "hitter", "타율")
+
+        self.assertIn("1. 최원준 (KT) | 0.358", message)
+        self.assertIn("2. 레이예스 (롯데) | 0.347", message)
+        self.assertNotIn("전다민", message)
+
+    def test_pitcher_rate_stats_exclude_unqualified_players_before_sorting(self):
+        rows = [
+            {"playerName": "올러", "teamName": "KIA", "pitcherWhip": 1.06, "isQualified": True},
+            {"playerName": "알칸타라", "teamName": "키움", "pitcherWhip": 1.08, "isQualified": True},
+            {"playerName": "김한종", "teamName": "두산", "pitcherWhip": 0.0, "isQualified": False},
+        ]
+
+        message = format_player_record_stats(rows, "pitcher", "WHIP")
+
+        self.assertIn("1. 올러 (KIA) | 1.06", message)
+        self.assertIn("2. 알칸타라 (키움) | 1.08", message)
+        self.assertNotIn("김한종", message)
+
     def test_record_option_prompt_and_resolution(self):
         self.assertIn("1. 타율", record_options_message("team"))
         self.assertEqual(resolve_record_option("team", "타율 알려줘"), "타율")

@@ -834,20 +834,20 @@ TEAM_RECORD_OPTIONS = {
 }
 
 HITTER_RECORD_OPTIONS = {
-    "타율": {"field": "hitterHra", "direction": "desc", "suffix": "", "precision": 3},
+    "타율": {"field": "hitterHra", "direction": "desc", "suffix": "", "precision": 3, "qualified": True},
     "홈런": {"field": "hitterHr", "direction": "desc", "suffix": "개"},
     "타점": {"field": "hitterRbi", "direction": "desc", "suffix": "점"},
     "도루": {"field": "hitterSb", "direction": "desc", "suffix": "개"},
-    "OPS": {"field": "hitterOps", "direction": "desc", "suffix": "", "precision": 3},
+    "OPS": {"field": "hitterOps", "direction": "desc", "suffix": "", "precision": 3, "qualified": True},
     "WAR": {"field": "hitterWar", "direction": "desc", "suffix": ""},
 }
 
 PITCHER_RECORD_OPTIONS = {
     "승": {"field": "pitcherWin", "direction": "desc", "suffix": "승"},
-    "평균자책": {"field": "pitcherEra", "direction": "asc", "suffix": ""},
+    "평균자책": {"field": "pitcherEra", "direction": "asc", "suffix": "", "precision": 2, "qualified": True},
     "탈삼진": {"field": "pitcherKk", "direction": "desc", "suffix": "개"},
     "세이브": {"field": "pitcherSave", "direction": "desc", "suffix": "개"},
-    "WHIP": {"field": "pitcherWhip", "direction": "asc", "suffix": ""},
+    "WHIP": {"field": "pitcherWhip", "direction": "asc", "suffix": "", "precision": 2, "qualified": True},
     "WAR": {"field": "pitcherWar", "direction": "desc", "suffix": ""},
 }
 
@@ -888,6 +888,8 @@ def format_player_record_stats(rows: list[dict[str, Any]], record_type: str, opt
     config = options[option]
     field = str(config["field"])
     reverse = config.get("direction") == "desc"
+    if config.get("qualified"):
+        rows = [row for row in rows if _is_qualified(row)]
     sorted_rows = sorted(rows, key=lambda row: _to_float(row.get(field)), reverse=reverse)[:limit]
     ranked = _rank_rows(sorted_rows, field)
     title = "타자 기록" if record_type == "hitter" else "투수 기록"
@@ -1006,6 +1008,13 @@ def _rank_rows(rows: list[dict[str, Any]], field: str) -> list[tuple[int, dict[s
             previous_value = value
         ranked.append((current_rank, row))
     return ranked
+
+
+def _is_qualified(row: dict[str, Any]) -> bool:
+    value = row.get("isQualified")
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().upper() in {"Y", "TRUE", "1"}
 
 
 def _format_record_value(value: Any, suffix: str = "", precision: Any = None) -> str:
