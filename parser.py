@@ -931,6 +931,19 @@ def format_kia_news_articles(articles: list[dict[str, Any]]) -> str:
 
 
 def format_pitching_decisions(record: dict[str, Any], away_name: str, home_name: str, away_score: int, home_score: int) -> str:
+    by_result = _collect_pitching_decisions(record)
+    decisions = by_result["승"] + by_result["패"] + by_result["세"] + by_result["홀"]
+    return "\n".join(["중계 | 경기종료", f"{away_name} {away_score} : {home_score} {home_name}", *decisions])
+
+
+def pitching_decisions_ready(record: dict[str, Any], away_score: int, home_score: int) -> bool:
+    if away_score == home_score:
+        return True
+    by_result = _collect_pitching_decisions(record)
+    return bool(by_result["승"] and by_result["패"])
+
+
+def _collect_pitching_decisions(record: dict[str, Any]) -> dict[str, list[str]]:
     pitchers = record.get("pitchersBoxscore", {})
     by_result: dict[str, list[str]] = {"승": [], "패": [], "세": [], "홀": []}
     seen: set[tuple[str, str]] = set()
@@ -939,8 +952,7 @@ def format_pitching_decisions(record: dict[str, Any], away_name: str, home_name:
     for side in ("away", "home"):
         for player in pitchers.get(side, []):
             _append_pitching_decision(by_result, seen, player)
-    decisions = by_result["승"] + by_result["패"] + by_result["세"] + by_result["홀"]
-    return "\n".join(["중계 | 경기종료", f"{away_name} {away_score} : {home_score} {home_name}", *decisions])
+    return by_result
 
 
 def _append_pitching_decision(

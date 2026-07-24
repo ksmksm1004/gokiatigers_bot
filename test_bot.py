@@ -75,6 +75,10 @@ class KiaNewsScheduleTest(unittest.TestCase):
             "gameInfo": {"aName": "한화", "hName": "KIA", "aCode": "HH", "hCode": "HT"},
             "battersBoxscore": {"awayTotal": {"run": 7}, "homeTotal": {"run": 3}, "away": [], "home": []},
             "teamPitchingBoxscore": {"home": {}},
+            "pitchingResult": [
+                {"name": "화이트", "wls": "W"},
+                {"name": "올러", "wls": "L"},
+            ],
             "pitchersBoxscore": {"away": [], "home": []},
         }
         game_news = [
@@ -244,6 +248,123 @@ class FinalScoreTest(unittest.TestCase):
         self.assertIn("승리투수: 화이트", joined)
         self.assertIn("패전투수: 올러", joined)
         self.assertIn("올러 패 |", joined)
+
+    def test_game_end_record_waits_until_win_and_loss_decisions_are_ready(self):
+        incomplete_record = {
+            "gameInfo": {"aName": "한화", "hName": "KIA", "aCode": "HH", "hCode": "HT"},
+            "battersBoxscore": {
+                "awayTotal": {"run": 9},
+                "homeTotal": {"run": 3},
+                "away": [],
+                "home": [],
+            },
+            "teamPitchingBoxscore": {"home": {}},
+            "pitchingResult": [],
+            "pitchersBoxscore": {
+                "away": [{"name": "왕옌청", "wls": ""}],
+                "home": [{"name": "시라카와", "wls": ""}],
+            },
+        }
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            state = {}
+            telegram = FakeTelegram()
+            client = FakeClient(incomplete_record)
+
+            sent = send_game_end_record_once(
+                client,
+                telegram,
+                settings,
+                state,
+                "game1",
+                "한화",
+                "KIA",
+                9,
+                3,
+            )
+
+            self.assertFalse(sent)
+            self.assertIn("중계 | 경기종료", "\n".join(telegram.messages))
+            self.assertIn("KIA 경기 기록", "\n".join(telegram.messages))
+            self.assertEqual(state["recordSentGameId"], "game1")
+            self.assertNotIn("pitchingDecisionsSentGameId", state)
+
+            client._record["pitchingResult"] = [
+                {"name": "왕옌청", "wls": "W"},
+                {"name": "시라카와", "wls": "L"},
+            ]
+            sent = send_game_end_record_once(
+                client,
+                telegram,
+                settings,
+                state,
+                "game1",
+                "한화",
+                "KIA",
+                9,
+                3,
+            )
+
+        self.assertTrue(sent)
+        self.assertEqual(state["recordSentGameId"], "game1")
+        self.assertEqual(state["pitchingDecisionsSentGameId"], "game1")
+        self.assertEqual(sum("KIA 경기 기록" in message for message in telegram.messages), 1)
+        joined = "\n".join(telegram.messages)
+        self.assertIn("승리투수: 왕옌청", joined)
+        self.assertIn("패전투수: 시라카와", joined)
+
+    def test_already_sent_record_only_sends_missing_pitching_decisions(self):
+        record = {
+            "gameInfo": {"aName": "한화", "hName": "KIA", "aCode": "HH", "hCode": "HT"},
+            "battersBoxscore": {
+                "awayTotal": {"run": 9},
+                "homeTotal": {"run": 3},
+                "away": [],
+                "home": [],
+            },
+            "teamPitchingBoxscore": {"home": {}},
+            "pitchingResult": [
+                {"name": "왕옌청", "wls": "W"},
+                {"name": "시라카와", "wls": "L"},
+            ],
+            "pitchersBoxscore": {"away": [], "home": []},
+        }
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            state = {"recordSentGameId": "game1", "gameOverSentGameId": "game1"}
+            telegram = FakeTelegram()
+
+            sent = send_game_end_record_once(
+                FakeClient(record),
+                telegram,
+                settings,
+                state,
+                "game1",
+                "한화",
+                "KIA",
+                9,
+                3,
+            )
+
+        self.assertTrue(sent)
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertIn("승리투수: 왕옌청", telegram.messages[0])
+        self.assertIn("패전투수: 시라카와", telegram.messages[0])
+        self.assertNotIn("KIA 경기 기록", telegram.messages[0])
 
     def test_stopped_relay_does_not_send_record_before_relay_game_over(self):
         record = {

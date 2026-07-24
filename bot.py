@@ -38,6 +38,7 @@ from parser import (
     lineup_media_items,
     parse_game_summary,
     parse_relay_events,
+    pitching_decisions_ready,
     plate_result_label,
     plate_result_history,
     player_photo_url,
@@ -787,7 +788,7 @@ def resume_relay_for_game(
             }
         )
         if not is_game_over(events):
-            for key in ("recordSentGameId", "gameOverSentGameId"):
+            for key in ("recordSentGameId", "pitchingDecisionsSentGameId", "gameOverSentGameId"):
                 if state.get(key) == game_id:
                     state.pop(key, None)
             today = datetime.now(settings.timezone).date().isoformat()
@@ -1195,23 +1196,37 @@ def send_game_end_record_once(
     away_score: int,
     home_score: int,
 ) -> bool:
-    if state.get("recordSentGameId") == game_id:
+    if state.get("pitchingDecisionsSentGameId") == game_id:
         return True
+    record_already_sent = state.get("recordSentGameId") == game_id
     record = unwrap(client.record(game_id), "recordData")
     if not record:
         logging.info("Game record is not ready for %s. Will retry later.", game_id)
         return False
     away_score, home_score = final_score_from_record(record, away_score, home_score)
+    decisions_ready = pitching_decisions_ready(record, away_score, home_score)
+    decisions = format_pitching_decisions(record, away_name, home_name, away_score, home_score)
+    if record_already_sent:
+        if not decisions_ready:
+            logging.info("Pitching decisions are not ready for %s. Will retry later.", game_id)
+            return False
+        telegram.send_message(decisions)
+        state["pitchingDecisionsSentGameId"] = game_id
+        save_state(settings.state_path, state)
+        return True
     highlights = format_game_highlights(record, settings.team_code)
     if highlights:
         telegram.send_message(highlights)
-    decisions = format_pitching_decisions(record, away_name, home_name, away_score, home_score)
     telegram.send_message(decisions)
     telegram.send_message(format_kia_record(record, settings.team_code))
     state["recordSentGameId"] = game_id
+    if decisions_ready:
+        state["pitchingDecisionsSentGameId"] = game_id
     schedule_kia_news_after_game(settings, state, game_id)
     save_state(settings.state_path, state)
-    return True
+    if not decisions_ready:
+        logging.info("Pitching decisions are not ready for %s. Will retry later.", game_id)
+    return decisions_ready
 
 
 def schedule_kia_news_after_game(settings: Settings, state: dict[str, Any], game_id: str) -> None:
@@ -1355,6 +1370,18 @@ def finish_stopped_relay_game_if_done(
         telegram.send_message("경기 종료 알림을 확인했습니다. 오늘도 수고하셨습니다.")
         state["gameOverSentGameId"] = summary.game_id
         save_state(settings.state_path, state)
+    elif state.get("pitchingDecisionsSentGameId") != summary.game_id:
+        send_game_end_record_once(
+            client,
+            telegram,
+            settings,
+            state,
+            summary.game_id,
+            summary.away_name or "원정",
+            summary.home_name or "홈",
+            score_from_game(detailed_game, "away") or int(state.get("awayScore") or 0),
+            score_from_game(detailed_game, "home") or int(state.get("homeScore") or 0),
+        )
     send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
     return True
 
@@ -1645,6 +1672,18 @@ def main() -> None:
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                 sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.idle_poll_seconds)
             elif game_over:
+                if state.get("pitchingDecisionsSentGameId") != summary.game_id:
+                    send_game_end_record_once(
+                        client,
+                        telegram,
+                        settings,
+                        state,
+                        summary.game_id,
+                        summary.away_name or "원정",
+                        summary.home_name or "홈",
+                        int(state.get("awayScore") or 0),
+                        int(state.get("homeScore") or 0),
+                    )
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                 sleep_seconds = seconds_until_next_due(
                     now,
