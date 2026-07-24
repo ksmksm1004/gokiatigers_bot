@@ -15,6 +15,7 @@ from parser import (
     current_player_record,
     expected_batters_message,
     find_previous_plate_event,
+    format_daily_game_results,
     format_game_highlights,
     format_kia_news_articles,
     format_player_record_stats,
@@ -794,6 +795,8 @@ def resume_relay_for_game(
             today = datetime.now(settings.timezone).date().isoformat()
             if state.get("dailyRankingSentDate") == today:
                 state.pop("dailyRankingSentDate", None)
+            if state.get("dailyScoresSentDate") == today:
+                state.pop("dailyScoresSentDate", None)
     state.pop("relayStoppedGameId", None)
     save_state(settings.state_path, state)
     telegram.send_message("중계 재개합니다. 지금 이후 새 소식부터 보내겠습니다.")
@@ -1476,11 +1479,67 @@ def send_daily_rankings_if_all_games_done(
         logging.debug("Daily rankings pending. Unfinished games: %s", [game.get("gameId") for game in pending])
         return False
 
+    if state.get("dailyScoresSentDate") != today:
+        results = fetch_daily_game_results(client, games, cancelled_ids)
+        if results is None:
+            state["nextDailyRankingCheckAt"] = (now + timedelta(seconds=settings.idle_poll_seconds)).isoformat()
+            save_state(settings.state_path, state)
+            return False
+        telegram.send_message(format_daily_game_results(results))
+        state["dailyScoresSentDate"] = today
+        save_state(settings.state_path, state)
+
     send_team_rankings(client, telegram, settings)
     state["dailyRankingSentDate"] = today
     state.pop("nextDailyRankingCheckAt", None)
     save_state(settings.state_path, state)
     return True
+
+
+def fetch_daily_game_results(
+    client: NaverSportsClient,
+    games: list[dict[str, Any]],
+    cancelled_ids: set[str],
+) -> list[dict[str, Any]] | None:
+    results: list[dict[str, Any]] = []
+    for game in games:
+        game_id = str(game.get("gameId") or "")
+        away_code = str(game.get("awayTeamCode") or game.get("aCode") or "")
+        home_code = str(game.get("homeTeamCode") or game.get("hCode") or "")
+        away_name = str(game.get("awayTeamName") or game.get("aName") or TEAM_NAMES.get(away_code, away_code or "원정"))
+        home_name = str(game.get("homeTeamName") or game.get("hName") or TEAM_NAMES.get(home_code, home_code or "홈"))
+        status = str(game.get("statusCode") or "").upper()
+        cancelled = game_id in cancelled_ids or status in {"CANCEL", "CANCELED", "CANCELLED"}
+        if cancelled:
+            results.append({"awayName": away_name, "homeName": home_name, "cancelled": True})
+            continue
+
+        try:
+            record = unwrap(client.record(game_id), "recordData")
+        except Exception:
+            logging.exception("Failed to load final score for %s.", game_id)
+            return None
+        if not record:
+            logging.info("Final score is not ready for %s. Will retry later.", game_id)
+            return None
+
+        info = record.get("gameInfo", {})
+        away_name = str(info.get("aName") or away_name)
+        home_name = str(info.get("hName") or home_name)
+        away_score, home_score = final_score_from_record(record, -1, -1)
+        if away_score < 0 or home_score < 0:
+            logging.info("Final score is not ready for %s. Will retry later.", game_id)
+            return None
+        results.append(
+            {
+                "awayName": away_name,
+                "homeName": home_name,
+                "awayScore": away_score,
+                "homeScore": home_score,
+                "cancelled": False,
+            }
+        )
+    return results
 
 
 def is_terminal_game(game: dict[str, Any], cancelled_ids: set[str]) -> bool:
@@ -1606,6 +1665,7 @@ def main() -> None:
                     "detailedGame": state.get("detailedGame"),
                     "telegramUpdateOffset": state.get("telegramUpdateOffset"),
                     "cancelledGameIds": state.get("cancelledGameIds", []),
+                    "dailyScoresSentDate": state.get("dailyScoresSentDate"),
                     "dailyRankingSentDate": state.get("dailyRankingSentDate"),
                     "nextDailyRankingCheckAt": state.get("nextDailyRankingCheckAt"),
                     "nextPreviewCheckAt": state.get("nextPreviewCheckAt"),

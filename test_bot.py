@@ -13,6 +13,7 @@ from bot import (
     process_relay,
     record_options_keyboard,
     resume_relay_for_game,
+    send_daily_rankings_if_all_games_done,
     send_due_kia_news,
     send_game_end_record_once,
     send_kia_news_command,
@@ -151,6 +152,108 @@ class KiaNewsScheduleTest(unittest.TestCase):
         self.assertIn("KIA 주요 기사", message)
         self.assertIn("10. KIA 기사 9", message)
         self.assertNotIn("11. KIA 기사 10", message)
+
+
+class DailyGameResultsTest(unittest.TestCase):
+    def test_daily_scores_are_sent_immediately_before_rankings(self):
+        games = [
+            {
+                "gameId": "game1",
+                "awayTeamCode": "KT",
+                "homeTeamCode": "LT",
+                "statusCode": "RESULT",
+            },
+            {
+                "gameId": "game2",
+                "awayTeamCode": "WO",
+                "homeTeamCode": "HT",
+                "statusCode": "RESULT",
+            },
+        ]
+        records = {
+            "game1": {
+                "gameInfo": {"aName": "KT", "hName": "롯데"},
+                "battersBoxscore": {
+                    "awayTotal": {"run": 5},
+                    "homeTotal": {"run": 4},
+                },
+            },
+            "game2": {
+                "gameInfo": {"aName": "키움", "hName": "KIA"},
+                "battersBoxscore": {
+                    "awayTotal": {"run": 8},
+                    "homeTotal": {"run": 5},
+                },
+            },
+        }
+
+        class DailyClient:
+            def games_on(self, day):
+                return games
+
+            def record(self, game_id):
+                return {"result": {"recordData": records[game_id]}}
+
+            def team_rankings(self, season):
+                return {
+                    "result": {
+                        "seasonTeamStats": [
+                            {
+                                "teamId": "HT",
+                                "teamName": "KIA",
+                                "ranking": 5,
+                                "winGameCount": 49,
+                                "drawnGameCount": 2,
+                                "loseGameCount": 42,
+                                "gameBehind": "7.5",
+                                "continuousGameResult": "1패",
+                            }
+                        ]
+                    }
+                }
+
+            def last_ten_games(self, season):
+                return {
+                    "result": {
+                        "seasonTeamLastTenGameStats": [
+                            {"teamId": "HT", "lastTenGameResult": "4승 6패"}
+                        ]
+                    }
+                }
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            state = {}
+            telegram = FakeTelegram()
+            sent = send_daily_rankings_if_all_games_done(
+                DailyClient(),
+                telegram,
+                settings,
+                state,
+                datetime(2026, 7, 24, 22, 30, tzinfo=settings.timezone),
+            )
+
+        self.assertTrue(sent)
+        self.assertEqual(len(telegram.messages), 2)
+        self.assertEqual(
+            telegram.messages[0],
+            "\n".join(
+                [
+                    "오늘의 KBO 경기 결과",
+                    "KT 5 : 4 롯데",
+                    "키움 8 : 5 KIA",
+                ]
+            ),
+        )
+        self.assertTrue(telegram.messages[1].startswith("KBO 팀 순위"))
+        self.assertEqual(state["dailyScoresSentDate"], "2026-07-24")
+        self.assertEqual(state["dailyRankingSentDate"], "2026-07-24")
 
 
 class FinalScoreTest(unittest.TestCase):

@@ -824,6 +824,18 @@ def format_team_rankings(rankings: dict[str, Any], last_ten: dict[str, Any]) -> 
     return "\n".join(lines)
 
 
+def format_daily_game_results(results: list[dict[str, Any]]) -> str:
+    lines = ["오늘의 KBO 경기 결과"]
+    for result in results:
+        away_name = result.get("awayName", "원정")
+        home_name = result.get("homeName", "홈")
+        if result.get("cancelled"):
+            lines.append(f"{away_name} vs {home_name} | 경기취소")
+            continue
+        lines.append(f"{away_name} {result.get('awayScore', '-')} : {result.get('homeScore', '-')} {home_name}")
+    return "\n".join(lines)
+
+
 TEAM_RECORD_OPTIONS = {
     "타율": {"field": "offenseHra", "direction": "desc", "suffix": "", "precision": 3, "extra": "offenseHit", "extra_label": "안타"},
     "평균자책": {"field": "defenseEra", "direction": "asc", "suffix": "", "extra": "defenseInning", "extra_label": "이닝"},
