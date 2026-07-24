@@ -10,6 +10,7 @@ from parser import (
     format_relay_event,
     format_relay_event_with_context,
     format_team_record_stats,
+    has_starting_lineups,
     kia_news_articles,
     plate_result_history,
     record_options_message,
@@ -17,6 +18,52 @@ from parser import (
     should_send_relay_event,
 )
 from parser import format_preview
+
+
+class StartingLineupTest(unittest.TestCase):
+    @staticmethod
+    def lineup(prefix):
+        return [
+            {
+                "playerCode": f"{prefix}-pitcher",
+                "playerName": f"{prefix} 선발",
+                "batorder": None,
+                "positionName": "선발투수",
+            },
+            *[
+                {
+                    "playerCode": f"{prefix}-{order}",
+                    "playerName": f"{prefix} 타자 {order}",
+                    "batorder": order,
+                    "positionName": "타자",
+                }
+                for order in range(1, 10)
+            ],
+        ]
+
+    def test_pitchers_only_are_not_treated_as_complete_lineups(self):
+        preview = {
+            "awayTeamLineUp": {"fullLineUp": [self.lineup("away")[0]]},
+            "homeTeamLineUp": {"fullLineUp": [self.lineup("home")[0]]},
+        }
+
+        self.assertFalse(has_starting_lineups(preview))
+
+    def test_both_pitchers_and_batting_orders_one_through_nine_are_complete(self):
+        preview = {
+            "awayTeamLineUp": {"fullLineUp": self.lineup("away")},
+            "homeTeamLineUp": {"fullLineUp": self.lineup("home")},
+        }
+
+        self.assertTrue(has_starting_lineups(preview))
+
+    def test_one_incomplete_team_keeps_lineup_pending(self):
+        preview = {
+            "awayTeamLineUp": {"fullLineUp": self.lineup("away")},
+            "homeTeamLineUp": {"fullLineUp": self.lineup("home")[:-1]},
+        }
+
+        self.assertFalse(has_starting_lineups(preview))
 
 
 class FormatPreviewTest(unittest.TestCase):

@@ -223,7 +223,14 @@ def _lineup_lines(preview: dict[str, Any]) -> list[str]:
 
 
 def has_starting_lineups(preview: dict[str, Any]) -> bool:
-    return bool(get_starting_lineup(preview, "away") and get_starting_lineup(preview, "home"))
+    return _has_complete_starting_lineup(preview, "away") and _has_complete_starting_lineup(preview, "home")
+
+
+def _has_complete_starting_lineup(preview: dict[str, Any], side: str) -> bool:
+    players = get_starting_lineup(preview, side)
+    batting_orders = {_to_int(player.get("batorder")) for player in players if player.get("batorder")}
+    has_starting_pitcher = any(not player.get("batorder") for player in players)
+    return batting_orders == set(range(1, 10)) and has_starting_pitcher
 
 
 def get_starting_lineup(preview: dict[str, Any], side: str) -> list[dict[str, Any]]:
