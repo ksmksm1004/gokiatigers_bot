@@ -1,7 +1,10 @@
 import unittest
 from datetime import date
+from unittest.mock import Mock, patch
 
-from naver_api import NaverSportsClient, find_calendar_game_dicts
+import requests
+
+from naver_api import NaverSportsClient, find_calendar_game_dicts, unwrap
 
 
 class CalendarOnlyClient(NaverSportsClient):
@@ -18,6 +21,23 @@ class CalendarOnlyClient(NaverSportsClient):
 
 
 class NaverApiTest(unittest.TestCase):
+    def test_unwrap_converts_null_payload_to_empty_dict(self):
+        self.assertEqual(unwrap({"result": {"textRelayData": None}}, "textRelayData"), {})
+
+    @patch("naver_api.time.sleep")
+    def test_get_json_retries_transient_connection_error(self, sleep):
+        response = Mock(status_code=200)
+        response.json.return_value = {"success": True}
+        client = NaverSportsClient()
+        client.session = Mock()
+        client.session.get.side_effect = [requests.ConnectionError("reset"), response]
+
+        result = client.get_json("/schedule/test")
+
+        self.assertEqual(result, {"success": True})
+        self.assertEqual(client.session.get.call_count, 2)
+        sleep.assert_called_once()
+
     def test_games_on_returns_empty_when_calendar_has_no_games(self):
         client = CalendarOnlyClient(
             {

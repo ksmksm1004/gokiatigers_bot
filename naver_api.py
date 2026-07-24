@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from datetime import date
 from typing import Any
 from urllib.parse import urljoin
@@ -29,9 +31,27 @@ class NaverSportsClient:
         url = url_or_path
         if not url.startswith("http"):
             url = urljoin(NAVER_API_BASE, url.lstrip("/"))
-        response = self.session.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        return response.json()
+        for attempt in range(3):
+            try:
+                response = self.session.get(url, params=params, timeout=10)
+                if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
+                    logging.warning(
+                        "Naver API returned %s for %s. Retrying.",
+                        response.status_code,
+                        url,
+                    )
+                    time.sleep(0.5 * (2**attempt))
+                    continue
+                response.raise_for_status()
+                return response.json()
+            except requests.HTTPError:
+                raise
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt >= 2:
+                    raise
+                logging.warning("Naver API request failed for %s. Retrying.", url)
+                time.sleep(0.5 * (2**attempt))
+        return {}
 
     def preview(self, game_id: str) -> dict[str, Any]:
         return self.get_json(f"/schedule/games/{game_id}/preview")
@@ -184,6 +204,11 @@ def find_calendar_game_dicts(value: Any, day: date) -> list[dict[str, Any]]:
     return games
 
 
-def unwrap(data: dict[str, Any], key: str) -> dict[str, Any]:
+def unwrap(data: Any, key: str) -> Any:
+    if not isinstance(data, dict):
+        return {}
     result = data.get("result", data)
-    return result.get(key, result)
+    if not isinstance(result, dict):
+        return {}
+    value = result.get(key, result)
+    return {} if value is None else value

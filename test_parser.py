@@ -12,6 +12,7 @@ from parser import (
     format_team_record_stats,
     has_starting_lineups,
     kia_news_articles,
+    parse_relay_events,
     plate_result_history,
     record_options_message,
     resolve_record_option,
@@ -64,6 +65,12 @@ class StartingLineupTest(unittest.TestCase):
         }
 
         self.assertFalse(has_starting_lineups(preview))
+
+
+class RelayParsingTest(unittest.TestCase):
+    def test_null_relay_payload_is_treated_as_no_events(self):
+        self.assertEqual(parse_relay_events(None), [])
+        self.assertEqual(parse_relay_events({"textRelays": None}), [])
 
 
 class FormatPreviewTest(unittest.TestCase):

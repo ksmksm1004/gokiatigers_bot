@@ -776,27 +776,30 @@ def resume_relay_for_game(
         telegram.send_message("중계 재개 준비 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
         return
 
-    if events:
-        latest = events[-1]
-        state.update(
-            {
-                "inning": f"{latest.inning}회{latest.half}",
-                "homeScore": latest.home_score,
-                "awayScore": latest.away_score,
-                "lastRelaySeq": latest.event_id,
-                "relayBootstrapped": True,
-                "updatedAt": datetime.now(settings.timezone).isoformat(),
-            }
-        )
-        if not is_game_over(events):
-            for key in ("recordSentGameId", "pitchingDecisionsSentGameId", "gameOverSentGameId"):
-                if state.get(key) == game_id:
-                    state.pop(key, None)
-            today = datetime.now(settings.timezone).date().isoformat()
-            if state.get("dailyRankingSentDate") == today:
-                state.pop("dailyRankingSentDate", None)
-            if state.get("dailyScoresSentDate") == today:
-                state.pop("dailyScoresSentDate", None)
+    if not events:
+        telegram.send_message("중계 데이터가 아직 준비되지 않았습니다. 잠시 후 다시 시도해주세요.")
+        return
+
+    latest = events[-1]
+    state.update(
+        {
+            "inning": f"{latest.inning}회{latest.half}",
+            "homeScore": latest.home_score,
+            "awayScore": latest.away_score,
+            "lastRelaySeq": latest.event_id,
+            "relayBootstrapped": True,
+            "updatedAt": datetime.now(settings.timezone).isoformat(),
+        }
+    )
+    if not is_game_over(events):
+        for key in ("recordSentGameId", "pitchingDecisionsSentGameId", "gameOverSentGameId"):
+            if state.get(key) == game_id:
+                state.pop(key, None)
+        today = datetime.now(settings.timezone).date().isoformat()
+        if state.get("dailyRankingSentDate") == today:
+            state.pop("dailyRankingSentDate", None)
+        if state.get("dailyScoresSentDate") == today:
+            state.pop("dailyScoresSentDate", None)
     state.pop("relayStoppedGameId", None)
     save_state(settings.state_path, state)
     telegram.send_message("중계 재개합니다. 지금 이후 새 소식부터 보내겠습니다.")

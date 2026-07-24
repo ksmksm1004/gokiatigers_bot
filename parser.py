@@ -264,15 +264,17 @@ def lineup_media_items(preview: dict[str, Any], side: str) -> list[tuple[str, st
     return items[:10]
 
 
-def parse_relay_events(relay: dict[str, Any]) -> list[RelayEvent]:
-    text_relays = relay.get("textRelays", [])
+def parse_relay_events(relay: dict[str, Any] | None) -> list[RelayEvent]:
+    if not isinstance(relay, dict):
+        return []
+    text_relays = relay.get("textRelays") or []
     events: list[RelayEvent] = []
 
     for group in text_relays:
         title = str(group.get("title") or "")
         inning = int(group.get("inn") or 0)
         half = "말" if str(group.get("homeOrAway")) == "1" else "초"
-        for option in group.get("textOptions", []):
+        for option in group.get("textOptions") or []:
             state = option.get("currentGameState", {})
             text = str(option.get("text") or "").strip()
             seqno = option.get("seqno")

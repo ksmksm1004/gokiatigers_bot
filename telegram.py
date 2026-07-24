@@ -73,12 +73,23 @@ class TelegramBot:
         payload: dict[str, Any] = {"timeout": 0}
         if offset is not None:
             payload["offset"] = offset
-        response = self.session.get(f"{self.base_url}/getUpdates", params=payload, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        if not data.get("ok"):
-            return []
-        return data.get("result", [])
+        for attempt in range(2):
+            try:
+                response = self.session.get(f"{self.base_url}/getUpdates", params=payload, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                if not data.get("ok"):
+                    return []
+                return data.get("result", [])
+            except requests.HTTPError:
+                raise
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt == 0:
+                    logging.warning("Telegram getUpdates failed. Retrying once.")
+                    time.sleep(0.5)
+                    continue
+                logging.warning("Telegram getUpdates failed again. Skipping this polling cycle.")
+        return []
 
     def _post(self, method: str, payload: dict[str, Any]) -> None:
         response = self.session.post(f"{self.base_url}/{method}", json=payload, timeout=10)
