@@ -817,6 +817,16 @@ def process_relay(
 
     last_seq = int(state.get("lastRelaySeq") or 0)
     sent_summaries = set(state.get("kiaHalfSummariesSent", []))
+    relay, events = include_previous_kia_half(
+        client,
+        game_id,
+        relay,
+        events,
+        sent_summaries,
+        home_code,
+        away_code,
+        settings.team_code,
+    )
     if last_seq == 0 and not state.get("relayBootstrapped"):
         latest = events[-1]
         telegram.send_message(
@@ -890,6 +900,43 @@ def process_relay(
     )
     save_state(settings.state_path, state)
     return is_game_over(events)
+
+
+def include_previous_kia_half(
+    client: NaverSportsClient,
+    game_id: str,
+    relay: dict[str, Any],
+    events: list,
+    sent_summaries: set,
+    home_code: str,
+    away_code: str,
+    team_code: str,
+) -> tuple[dict[str, Any], list]:
+    available_halves = {(event.inning, event.half) for event in events}
+    missing_innings: set[int] = set()
+    for event in events:
+        if not event.is_attack_start or half_key(event) in sent_summaries:
+            continue
+        if is_kia_batting(event, home_code, away_code, team_code):
+            continue
+        previous_half = (event.inning, "초") if event.half == "말" else (event.inning - 1, "말")
+        if previous_half[0] > 0 and previous_half not in available_halves:
+            missing_innings.add(previous_half[0])
+
+    if not missing_innings:
+        return relay, events
+
+    combined_groups = list(relay.get("textRelays", []))
+    for inning in sorted(missing_innings):
+        try:
+            previous_relay = unwrap(client.relay(game_id, inning=inning), "textRelayData")
+            combined_groups = list(previous_relay.get("textRelays", [])) + combined_groups
+        except Exception:
+            logging.exception("Failed to load inning %s for KIA half summary.", inning)
+
+    enriched_relay = relay.copy()
+    enriched_relay["textRelays"] = combined_groups
+    return enriched_relay, parse_relay_events(enriched_relay)
 
 
 def dispatch_relay_events(

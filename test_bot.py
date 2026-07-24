@@ -10,6 +10,7 @@ from bot import (
     finish_stopped_relay_game_if_done,
     format_team_schedule,
     option_from_callback_data,
+    process_relay,
     record_options_keyboard,
     resume_relay_for_game,
     send_due_kia_news,
@@ -20,9 +21,10 @@ from config import Settings
 
 
 class FakeClient:
-    def __init__(self, record=None, relay=None, games=None, game_news=None, section_news=None):
+    def __init__(self, record=None, relay=None, games=None, game_news=None, section_news=None, relay_by_inning=None):
         self._record = record
         self._relay = relay or {"textRelays": []}
+        self._relay_by_inning = relay_by_inning or {}
         self._games = games or []
         self._game_news = game_news or []
         self._section_news = section_news or []
@@ -32,8 +34,9 @@ class FakeClient:
         self.record_calls += 1
         return {"result": {"recordData": self._record}}
 
-    def relay(self, game_id):
-        return {"result": {"textRelayData": self._relay}}
+    def relay(self, game_id, inning=None):
+        relay = self._relay_by_inning.get(inning, self._relay)
+        return {"result": {"textRelayData": relay}}
 
     def games_on(self, day):
         return self._games
@@ -488,6 +491,128 @@ class TeamScheduleTest(unittest.TestCase):
             ),
         )
         self.assertNotIn("두산", message)
+
+
+class KiaHalfSummaryTest(unittest.TestCase):
+    def test_process_relay_loads_previous_inning_for_home_kia_summary(self):
+        current_relay = {
+            "homeLineup": {
+                "batter": [
+                    {
+                        "pcode": "3",
+                        "name": "김도영",
+                        "batOrder": 3,
+                        "seasonHra": "0.294",
+                        "ab": 2,
+                        "run": 1,
+                        "hit": 1,
+                        "bb": 1,
+                    },
+                    {
+                        "pcode": "4",
+                        "name": "나성범",
+                        "batOrder": 4,
+                        "seasonHra": "0.298",
+                        "ab": 2,
+                        "run": 1,
+                        "hit": 1,
+                        "rbi": 3,
+                        "hr": 1,
+                        "bb": 1,
+                        "kk": 1,
+                    },
+                ]
+            },
+            "textRelays": [
+                {
+                    "inn": 9,
+                    "homeOrAway": "0",
+                    "title": "9회초 키움 공격",
+                    "textOptions": [
+                        {
+                            "seqno": 508,
+                            "text": "9회초 키움 공격",
+                            "currentGameState": {
+                                "awayScore": 1,
+                                "homeScore": 4,
+                                "batter": "away-1",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        previous_relay = {
+            "textRelays": [
+                {
+                    "inn": 8,
+                    "homeOrAway": "1",
+                    "title": "3번타자 김도영",
+                    "textOptions": [
+                        {
+                            "seqno": 500,
+                            "text": "김도영 : 우익수 앞 1루타",
+                            "currentGameState": {
+                                "awayScore": 1,
+                                "homeScore": 4,
+                                "batter": "3",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "inn": 8,
+                    "homeOrAway": "1",
+                    "title": "4번타자 나성범",
+                    "textOptions": [
+                        {
+                            "seqno": 507,
+                            "text": "나성범 : 삼진 아웃",
+                            "currentGameState": {
+                                "awayScore": 1,
+                                "homeScore": 4,
+                                "batter": "4",
+                            },
+                        }
+                    ],
+                },
+            ]
+        }
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            state = {
+                "lastRelaySeq": 507,
+                "relayBootstrapped": True,
+                "kiaHalfSummariesSent": [],
+            }
+            telegram = FakeTelegram()
+            client = FakeClient(relay=current_relay, relay_by_inning={8: previous_relay})
+
+            process_relay(
+                client,
+                telegram,
+                settings,
+                state,
+                "game1",
+                "키움",
+                "KIA",
+                "WO",
+                "HT",
+            )
+
+        joined = "\n".join(telegram.messages)
+        self.assertIn("KIA 공격 종료 | 8회말", joined)
+        self.assertIn("키움 1 : 4 KIA", joined)
+        self.assertIn("3 김도영 | .294 | 2타수 1득점 1안타 1볼넷", joined)
+        self.assertIn("4 나성범 | .298 | 2타수 1득점 1안타 3타점 1홈런 1볼넷 1삼진", joined)
+        self.assertIn("9초", state["kiaHalfSummariesSent"])
 
 
 class RelayPlateHistoryStateTest(unittest.TestCase):
