@@ -1070,8 +1070,12 @@ def with_state_plate_totals(player_record: dict[str, Any], history: list[dict[st
     if not at_bats:
         return player_record
     adjusted = player_record.copy()
-    adjusted["hit"] = max(_int_like(adjusted.get("hit")), hits)
-    adjusted["ab"] = max(_int_like(adjusted.get("ab")), at_bats)
+    api_at_bats = _int_like(adjusted.get("ab"))
+    if at_bats >= api_at_bats:
+        adjusted["hit"] = hits
+        adjusted["ab"] = at_bats
+    else:
+        adjusted["hit"] = max(_int_like(adjusted.get("hit")), hits)
     return adjusted
 
 

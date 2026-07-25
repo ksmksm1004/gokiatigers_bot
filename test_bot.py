@@ -17,6 +17,7 @@ from bot import (
     send_due_kia_news,
     send_game_end_record_once,
     send_kia_news_command,
+    with_state_plate_totals,
 )
 from config import Settings
 
@@ -719,6 +720,39 @@ class KiaHalfSummaryTest(unittest.TestCase):
 
 
 class RelayPlateHistoryStateTest(unittest.TestCase):
+    def test_complete_plate_history_corrects_inflated_api_hit_total(self):
+        player = {
+            "name": "김호령",
+            "batOrder": 2,
+            "seasonHra": "0.279",
+            "ab": 2,
+            "hit": 2,
+        }
+        history = [
+            {"eventId": 78, "label": "플라이"},
+            {"eventId": 220, "label": "3루타"},
+        ]
+
+        adjusted = with_state_plate_totals(player, history)
+
+        self.assertEqual(adjusted["ab"], 2)
+        self.assertEqual(adjusted["hit"], 1)
+
+    def test_partial_plate_history_keeps_larger_api_totals(self):
+        player = {
+            "name": "김호령",
+            "batOrder": 2,
+            "seasonHra": "0.279",
+            "ab": 3,
+            "hit": 2,
+        }
+        history = [{"eventId": 220, "label": "3루타"}]
+
+        adjusted = with_state_plate_totals(player, history)
+
+        self.assertEqual(adjusted["ab"], 3)
+        self.assertEqual(adjusted["hit"], 2)
+
     def test_dispatch_uses_state_history_and_fixes_stale_plate_totals(self):
         relay = {
             "homeLineup": {
