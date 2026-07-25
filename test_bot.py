@@ -399,7 +399,7 @@ class FinalScoreTest(unittest.TestCase):
                 3,
             )
 
-            self.assertFalse(sent)
+            self.assertTrue(sent)
             self.assertIn("중계 | 경기종료", "\n".join(telegram.messages))
             self.assertIn("KIA 경기 기록", "\n".join(telegram.messages))
             self.assertEqual(state["recordSentGameId"], "game1")
@@ -471,6 +471,7 @@ class FinalScoreTest(unittest.TestCase):
 
         self.assertTrue(sent)
         self.assertEqual(len(telegram.messages), 1)
+        self.assertTrue(telegram.messages[0].startswith("투수 판정 업데이트"))
         self.assertIn("승리투수: 왕옌청", telegram.messages[0])
         self.assertIn("패전투수: 시라카와", telegram.messages[0])
         self.assertNotIn("KIA 경기 기록", telegram.messages[0])

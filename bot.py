@@ -20,6 +20,7 @@ from parser import (
     format_kia_news_articles,
     format_player_record_stats,
     format_kia_record,
+    format_pitching_decision_update,
     format_pitching_decisions,
     format_preview,
     format_team_record_stats,
@@ -105,6 +106,7 @@ TEAM_NAMES = {
 }
 
 TERMINAL_SCHEDULE_STATUS = {"RESULT", "END", "CANCEL", "CANCELED", "CANCELLED"}
+PITCHING_DECISION_POLL_SECONDS = 60
 
 
 def setup_logging(settings: Settings) -> None:
@@ -1277,8 +1279,8 @@ def send_game_end_record_once(
     if record_already_sent:
         if not decisions_ready:
             logging.info("Pitching decisions are not ready for %s. Will retry later.", game_id)
-            return False
-        telegram.send_message(decisions)
+            return True
+        telegram.send_message(format_pitching_decision_update(record))
         state["pitchingDecisionsSentGameId"] = game_id
         save_state(settings.state_path, state)
         return True
@@ -1294,7 +1296,7 @@ def send_game_end_record_once(
     save_state(settings.state_path, state)
     if not decisions_ready:
         logging.info("Pitching decisions are not ready for %s. Will retry later.", game_id)
-    return decisions_ready
+    return True
 
 
 def schedule_kia_news_after_game(settings: Settings, state: dict[str, Any], game_id: str) -> None:
@@ -1762,7 +1764,13 @@ def main() -> None:
                     now,
                 )
                 if handled:
-                    sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.idle_poll_seconds)
+                    sleep_seconds = (
+                        PITCHING_DECISION_POLL_SECONDS
+                        if state.get("gameOverSentGameId") == summary.game_id
+                        and state.get("pitchingDecisionsSentGameId") != summary.game_id
+                        else settings.idle_poll_seconds
+                    )
+                    sleep_with_command_polling(client, weather_client, telegram, settings, state, sleep_seconds)
                     continue
 
             game_over = process_relay(
@@ -1795,7 +1803,12 @@ def main() -> None:
                 state["gameOverSentGameId"] = summary.game_id
                 save_state(settings.state_path, state)
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
-                sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.idle_poll_seconds)
+                sleep_seconds = (
+                    PITCHING_DECISION_POLL_SECONDS
+                    if state.get("pitchingDecisionsSentGameId") != summary.game_id
+                    else settings.idle_poll_seconds
+                )
+                sleep_with_command_polling(client, weather_client, telegram, settings, state, sleep_seconds)
             elif game_over:
                 if state.get("pitchingDecisionsSentGameId") != summary.game_id:
                     send_game_end_record_once(
@@ -1812,7 +1825,11 @@ def main() -> None:
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                 sleep_seconds = seconds_until_next_due(
                     now,
-                    settings.schedule_check_seconds,
+                    (
+                        PITCHING_DECISION_POLL_SECONDS
+                        if state.get("pitchingDecisionsSentGameId") != summary.game_id
+                        else settings.schedule_check_seconds
+                    ),
                     state.get("nextDailyRankingCheckAt"),
                     state.get("nextKiaNewsAt"),
                 )

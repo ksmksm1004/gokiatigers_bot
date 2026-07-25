@@ -958,6 +958,12 @@ def format_pitching_decisions(record: dict[str, Any], away_name: str, home_name:
     return "\n".join(["중계 | 경기종료", f"{away_name} {away_score} : {home_score} {home_name}", *decisions])
 
 
+def format_pitching_decision_update(record: dict[str, Any]) -> str:
+    by_result = _collect_pitching_decisions(record)
+    decisions = by_result["승"] + by_result["패"] + by_result["세"] + by_result["홀"]
+    return "\n".join(["투수 판정 업데이트", *decisions])
+
+
 def pitching_decisions_ready(record: dict[str, Any], away_score: int, home_score: int) -> bool:
     if away_score == home_score:
         return True
