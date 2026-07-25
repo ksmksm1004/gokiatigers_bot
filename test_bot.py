@@ -12,6 +12,8 @@ from bot import (
     option_from_callback_data,
     process_relay,
     record_options_keyboard,
+    remember_plate_result,
+    remember_plate_rbi_baseline,
     resume_relay_for_game,
     send_daily_rankings_if_all_games_done,
     send_due_kia_news,
@@ -720,6 +722,44 @@ class KiaHalfSummaryTest(unittest.TestCase):
 
 
 class RelayPlateHistoryStateTest(unittest.TestCase):
+    def test_existing_cumulative_rbi_is_not_attached_without_baseline(self):
+        event = SimpleNamespace(
+            event_id=261,
+            text="김도영 : 볼넷",
+            batter_code="52605",
+        )
+        state = {}
+
+        remember_plate_result(
+            state,
+            event,
+            {"name": "김도영", "batOrder": 3, "ab": 2, "hit": 0, "rbi": 3},
+        )
+
+        self.assertEqual(state["plateResultHistories"]["52605"][0]["label"], "볼넷")
+
+    def test_rbi_baseline_only_labels_increase_from_current_plate(self):
+        header = SimpleNamespace(
+            batter_code="52605",
+            is_plate_result=False,
+            batter_record={"rbi": 2},
+        )
+        result = SimpleNamespace(
+            event_id=262,
+            text="김도영 : 좌익수 앞 1루타",
+            batter_code="52605",
+        )
+        state = {}
+
+        remember_plate_rbi_baseline(state, header)
+        remember_plate_result(
+            state,
+            result,
+            {"name": "김도영", "batOrder": 3, "ab": 3, "hit": 1, "rbi": 3},
+        )
+
+        self.assertEqual(state["plateResultHistories"]["52605"][0]["label"], "안타(타점1)")
+
     def test_complete_plate_history_corrects_inflated_api_hit_total(self):
         player = {
             "name": "김호령",

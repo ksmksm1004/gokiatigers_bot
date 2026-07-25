@@ -3,6 +3,7 @@ import unittest
 from parser import (
     RelayEvent,
     changed_pitcher_lines,
+    current_player_record,
     expected_batters_message,
     format_batter_summary_stats,
     format_kia_news_articles,
@@ -71,6 +72,43 @@ class RelayParsingTest(unittest.TestCase):
     def test_null_relay_payload_is_treated_as_no_events(self):
         self.assertEqual(parse_relay_events(None), [])
         self.assertEqual(parse_relay_events({"textRelays": None}), [])
+
+
+class CurrentPlayerRecordTest(unittest.TestCase):
+    def test_lineup_record_is_not_overwritten_by_stale_current_player_info(self):
+        relay = {
+            "homeLineup": {
+                "batter": [
+                    {
+                        "pcode": "52605",
+                        "name": "김도영",
+                        "batOrder": 3,
+                        "ab": 2,
+                        "hit": 0,
+                        "rbi": 0,
+                        "bb": 1,
+                    }
+                ]
+            }
+        }
+        event = RelayEvent(
+            event_id=261,
+            inning=5,
+            half="말",
+            text="김도영 : 볼넷",
+            home_score=5,
+            away_score=3,
+            batter_code="52605",
+            home_or_away="1",
+            player_info={"batOrder": 4, "ab": 2, "hit": 1, "rbi": 3, "bb": 0},
+        )
+
+        player = current_player_record(relay, event)
+
+        self.assertEqual(player["batOrder"], 3)
+        self.assertEqual(player["hit"], 0)
+        self.assertEqual(player["rbi"], 0)
+        self.assertEqual(player["bb"], 1)
 
 
 class FormatPreviewTest(unittest.TestCase):

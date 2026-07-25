@@ -960,8 +960,10 @@ def dispatch_relay_events(
 ) -> set:
     for event in events_to_send:
         player_record = current_player_record(relay, event)
-        if is_kia_batting(event, home_code, away_code, settings.team_code) and is_batter_result_event(event):
-            remember_plate_result(state, event, player_record)
+        if is_kia_batting(event, home_code, away_code, settings.team_code):
+            remember_plate_rbi_baseline(state, event)
+            if is_batter_result_event(event):
+                remember_plate_result(state, event, player_record)
 
         if event.is_attack_start:
             pitcher_lines = []
@@ -1028,14 +1030,15 @@ def remember_plate_result(state: dict[str, Any], event, player_record: dict[str,
     player_for_label = player_record.copy()
     totals = state.setdefault("plateResultTotals", {})
     batter_totals = totals.setdefault(str(event.batter_code), {})
-    previous_rbi = _int_like(batter_totals.get("rbi"))
     current_rbi = _int_like(player_record.get("rbi"))
-    player_for_label["rbi"] = max(0, current_rbi - previous_rbi)
+    if "rbi" in batter_totals:
+        player_for_label["rbi"] = max(0, current_rbi - _int_like(batter_totals.get("rbi")))
+    else:
+        player_for_label["rbi"] = current_rbi if _int_like(player_record.get("ab")) <= 1 else 0
     label = plate_result_label(event, player_for_label)
     if not label:
         return
-    if current_rbi > previous_rbi:
-        batter_totals["rbi"] = current_rbi
+    batter_totals["rbi"] = current_rbi
     histories = state.setdefault("plateResultHistories", {})
     history = histories.setdefault(str(event.batter_code), [])
     event_id = int(event.event_id)
@@ -1043,6 +1046,14 @@ def remember_plate_result(state: dict[str, Any], event, player_record: dict[str,
         return
     history.append({"eventId": event_id, "label": label})
     history.sort(key=lambda item: int(item.get("eventId") or 0))
+
+
+def remember_plate_rbi_baseline(state: dict[str, Any], event) -> None:
+    if not event.batter_code or event.is_plate_result or not event.batter_record:
+        return
+    totals = state.setdefault("plateResultTotals", {})
+    batter_totals = totals.setdefault(str(event.batter_code), {})
+    batter_totals["rbi"] = _int_like(event.batter_record.get("rbi"))
 
 
 def state_plate_results(state: dict[str, Any], batter_code: str | None) -> list[dict[str, Any]]:

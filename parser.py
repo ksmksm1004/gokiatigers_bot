@@ -520,12 +520,13 @@ def relay_player_record(relay: dict[str, Any], event: RelayEvent) -> dict[str, A
 
 def current_player_record(relay: dict[str, Any], event: RelayEvent) -> dict[str, Any]:
     lineup_record = relay_player_record(relay, event)
-    event_record = event.batter_record or event.player_info or {}
-    if lineup_record and event_record:
+    if lineup_record and event.batter_record:
         merged = lineup_record.copy()
-        merged.update({key: value for key, value in event_record.items() if value not in (None, "")})
+        merged.update({key: value for key, value in event.batter_record.items() if value not in (None, "")})
         return merged
-    return event_record or lineup_record
+    if lineup_record:
+        return lineup_record
+    return event.batter_record or event.player_info or {}
 
 
 def plate_result_label(event: RelayEvent | None, player: dict[str, Any] | None = None) -> str:
