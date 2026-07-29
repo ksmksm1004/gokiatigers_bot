@@ -952,6 +952,16 @@ def format_kia_news_articles(articles: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def format_kia_highlight(highlight: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "KIA 경기 하이라이트",
+            str(highlight.get("title") or "-"),
+            str(highlight.get("url") or "https://www.youtube.com/@tvingsports"),
+        ]
+    )
+
+
 def format_pitching_decisions(record: dict[str, Any], away_name: str, home_name: str, away_score: int, home_score: int) -> str:
     by_result = _collect_pitching_decisions(record)
     decisions = by_result["승"] + by_result["패"] + by_result["세"] + by_result["홀"]

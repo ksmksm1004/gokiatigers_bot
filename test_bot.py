@@ -3,6 +3,7 @@ from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from bot import (
     dispatch_relay_events,
@@ -15,8 +16,10 @@ from bot import (
     remember_plate_result,
     remember_plate_rbi_baseline,
     resume_relay_for_game,
+    schedule_kia_highlight_after_rankings,
     send_daily_rankings_if_all_games_done,
     send_due_kia_news,
+    send_due_kia_highlight,
     send_game_end_record_once,
     send_kia_news_command,
     with_state_plate_totals,
@@ -158,7 +161,14 @@ class KiaNewsScheduleTest(unittest.TestCase):
 
 
 class DailyGameResultsTest(unittest.TestCase):
-    def test_daily_scores_are_sent_immediately_before_rankings(self):
+    @patch(
+        "bot.find_tving_kia_highlight",
+        return_value={
+            "title": "[키움 vs KIA] 7/24 경기 I 하이라이트 I TVING",
+            "url": "https://www.youtube.com/watch?v=highlight",
+        },
+    )
+    def test_daily_scores_rankings_and_highlight_are_sent_in_order(self, find_highlight):
         games = [
             {
                 "gameId": "game1",
@@ -243,7 +253,7 @@ class DailyGameResultsTest(unittest.TestCase):
             )
 
         self.assertTrue(sent)
-        self.assertEqual(len(telegram.messages), 2)
+        self.assertEqual(len(telegram.messages), 3)
         self.assertEqual(
             telegram.messages[0],
             "\n".join(
@@ -255,8 +265,55 @@ class DailyGameResultsTest(unittest.TestCase):
             ),
         )
         self.assertTrue(telegram.messages[1].startswith("KBO 팀 순위"))
+        self.assertEqual(
+            telegram.messages[2],
+            "\n".join(
+                [
+                    "KIA 경기 하이라이트",
+                    "[키움 vs KIA] 7/24 경기 I 하이라이트 I TVING",
+                    "https://www.youtube.com/watch?v=highlight",
+                ]
+            ),
+        )
+        find_highlight.assert_called_once_with(date(2026, 7, 24))
         self.assertEqual(state["dailyScoresSentDate"], "2026-07-24")
         self.assertEqual(state["dailyRankingSentDate"], "2026-07-24")
+        self.assertEqual(state["kiaHighlightSentDate"], "2026-07-24")
+
+    @patch("bot.find_tving_kia_highlight", return_value=None)
+    def test_missing_highlight_is_retried_ten_minutes_later(self, find_highlight):
+        now = datetime(2026, 7, 29, 22, 10)
+        games = [
+            {
+                "gameId": "20260729HTSS02026",
+                "awayTeamCode": "HT",
+                "homeTeamCode": "SS",
+                "statusCode": "RESULT",
+            }
+        ]
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            now = now.replace(tzinfo=settings.timezone)
+            state = {}
+            telegram = FakeTelegram()
+            schedule_kia_highlight_after_rankings(settings, state, now, games, set())
+            sent = send_due_kia_highlight(telegram, settings, state, now)
+
+        self.assertFalse(sent)
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(state["kiaHighlightAttemptCount"], 1)
+        self.assertEqual(
+            state["nextKiaHighlightAt"],
+            datetime(2026, 7, 29, 22, 20, tzinfo=settings.timezone).isoformat(),
+        )
+        find_highlight.assert_called_once_with(date(2026, 7, 29))
 
 
 class FinalScoreTest(unittest.TestCase):
