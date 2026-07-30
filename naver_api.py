@@ -69,6 +69,9 @@ class NaverSportsClient:
             params={"isPhoto": "N", "page": 1, "pageSize": page_size},
         )
 
+    def game_videos(self, game_id: str) -> dict[str, Any]:
+        return self.get_json(f"/video/game/{game_id}")
+
     def section_news(
         self,
         section_id: str = "kbaseball",

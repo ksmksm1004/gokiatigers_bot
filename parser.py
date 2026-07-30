@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlencode
 
 
 KIA_CODE = "HT"
@@ -958,6 +959,67 @@ def format_kia_highlight(highlight: dict[str, Any]) -> str:
             "KIA 경기 하이라이트",
             str(highlight.get("title") or "-"),
             str(highlight.get("url") or "https://www.youtube.com/@tvingsports"),
+        ]
+    )
+
+
+def naver_game_shorts(
+    videos: list[dict[str, Any]],
+    game_id: str,
+    limit: int = 5,
+) -> list[dict[str, str]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for video in videos:
+        media_id = str(video.get("masterVid") or "").strip()
+        if (
+            not media_id
+            or media_id in seen
+            or str(video.get("gameId") or "") != game_id
+            or str(video.get("videoType") or "").lower() != "shortform"
+        ):
+            continue
+        seen.add(media_id)
+        candidates.append(video)
+
+    candidates.sort(
+        key=lambda video: (
+            "kia" in str(video.get("seasonName") or "").lower(),
+            _to_float(video.get("hit")),
+        ),
+        reverse=True,
+    )
+
+    shorts: list[dict[str, str]] = []
+    for video in candidates[:limit]:
+        short_form = video.get("shortForm") if isinstance(video.get("shortForm"), dict) else {}
+        service_type = str(short_form.get("serviceType") or video.get("serviceType") or "SPORTS")
+        rec_type = str(short_form.get("recType") or "SPORTS")
+        media_id = str(video.get("masterVid"))
+        query = urlencode(
+            {
+                "mediaId": media_id,
+                "serviceType": service_type,
+                "recType": rec_type,
+                "includePost": "false",
+                "recId": f"rec-game-{game_id}",
+            }
+        )
+        shorts.append(
+            {
+                "mediaId": media_id,
+                "title": str(video.get("title") or "KIA 경기 쇼츠"),
+                "url": f"https://m.naver.com/shorts/?{query}",
+            }
+        )
+    return shorts
+
+
+def format_naver_short(short: dict[str, str]) -> str:
+    return "\n".join(
+        [
+            f"네이버 쇼츠 | {short.get('title') or 'KIA 경기'}",
+            str(short.get("url") or ""),
         ]
     )
 

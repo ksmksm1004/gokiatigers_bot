@@ -1,5 +1,5 @@
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
@@ -18,6 +18,7 @@ from bot import (
     resume_relay_for_game,
     schedule_kia_highlight_after_rankings,
     send_daily_rankings_if_all_games_done,
+    send_due_kia_shorts,
     send_due_kia_news,
     send_due_kia_highlight,
     send_game_end_record_once,
@@ -28,13 +29,23 @@ from config import Settings
 
 
 class FakeClient:
-    def __init__(self, record=None, relay=None, games=None, game_news=None, section_news=None, relay_by_inning=None):
+    def __init__(
+        self,
+        record=None,
+        relay=None,
+        games=None,
+        game_news=None,
+        section_news=None,
+        relay_by_inning=None,
+        game_videos=None,
+    ):
         self._record = record
         self._relay = relay or {"textRelays": []}
         self._relay_by_inning = relay_by_inning or {}
         self._games = games or []
         self._game_news = game_news or []
         self._section_news = section_news or []
+        self._game_videos = game_videos or []
         self.record_calls = 0
 
     def record(self, game_id):
@@ -50,6 +61,9 @@ class FakeClient:
 
     def game_news(self, game_id, page_size=10):
         return {"result": {"newsList": self._game_news}}
+
+    def game_videos(self, game_id):
+        return {"result": {"vodList": self._game_videos}}
 
     def section_news(self, section_id="kbaseball", page_size=40, date_yyyymmdd=None):
         return {"result": {"newsList": self._section_news}}
@@ -234,6 +248,28 @@ class DailyGameResultsTest(unittest.TestCase):
                     }
                 }
 
+            def game_videos(self, game_id):
+                return {
+                    "result": {
+                        "vodList": [
+                            {
+                                "gameId": game_id,
+                                "masterVid": f"short-{index}",
+                                "title": f"KIA 쇼츠 {index}",
+                                "videoType": "shortform",
+                                "seasonName": "KIA타이거즈",
+                                "serviceType": "SPORTS",
+                                "shortForm": {
+                                    "serviceType": "SPORTS",
+                                    "recType": "SPORTS",
+                                },
+                                "hit": 100 - index,
+                            }
+                            for index in range(1, 6)
+                        ]
+                    }
+                }
+
         with TemporaryDirectory() as temp_dir:
             settings = Settings(
                 telegram_token="",
@@ -253,7 +289,7 @@ class DailyGameResultsTest(unittest.TestCase):
             )
 
         self.assertTrue(sent)
-        self.assertEqual(len(telegram.messages), 3)
+        self.assertEqual(len(telegram.messages), 8)
         self.assertEqual(
             telegram.messages[0],
             "\n".join(
@@ -275,10 +311,16 @@ class DailyGameResultsTest(unittest.TestCase):
                 ]
             ),
         )
+        for index, message in enumerate(telegram.messages[3:], 1):
+            self.assertTrue(message.startswith(f"네이버 쇼츠 | KIA 쇼츠 {index}\n"))
+            self.assertIn(f"mediaId=short-{index}", message)
+            self.assertIn("recId=rec-game-game2", message)
         find_highlight.assert_called_once_with(date(2026, 7, 24))
         self.assertEqual(state["dailyScoresSentDate"], "2026-07-24")
         self.assertEqual(state["dailyRankingSentDate"], "2026-07-24")
         self.assertEqual(state["kiaHighlightSentDate"], "2026-07-24")
+        self.assertEqual(state["kiaShortsSentDate"], "2026-07-24")
+        self.assertEqual(len(state["kiaShortsSentMediaIds"]), 5)
 
     @patch("bot.find_tving_kia_highlight", return_value=None)
     def test_missing_highlight_is_retried_ten_minutes_later(self, find_highlight):
@@ -304,7 +346,7 @@ class DailyGameResultsTest(unittest.TestCase):
             state = {}
             telegram = FakeTelegram()
             schedule_kia_highlight_after_rankings(settings, state, now, games, set())
-            sent = send_due_kia_highlight(telegram, settings, state, now)
+            sent = send_due_kia_highlight(FakeClient(), telegram, settings, state, now)
 
         self.assertFalse(sent)
         self.assertEqual(telegram.messages, [])
@@ -314,6 +356,70 @@ class DailyGameResultsTest(unittest.TestCase):
             datetime(2026, 7, 29, 22, 20, tzinfo=settings.timezone).isoformat(),
         )
         find_highlight.assert_called_once_with(date(2026, 7, 29))
+
+    def test_partial_shorts_are_not_resent_while_waiting_for_five(self):
+        now = datetime(2026, 7, 30, 23, 0)
+        first_batch = [
+            {
+                "gameId": "20260730HTSS02026",
+                "masterVid": f"media-{index}",
+                "title": f"쇼츠 {index}",
+                "videoType": "shortform",
+                "serviceType": "SPORTS",
+                "hit": index,
+            }
+            for index in range(1, 4)
+        ]
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            now = now.replace(tzinfo=settings.timezone)
+            state = {
+                "kiaShortsDate": "2026-07-30",
+                "kiaShortsGameId": "20260730HTSS02026",
+                "nextKiaShortsAt": now.isoformat(),
+                "kiaShortsSentMediaIds": [],
+            }
+            telegram = FakeTelegram()
+            sent = send_due_kia_shorts(
+                FakeClient(game_videos=first_batch),
+                telegram,
+                settings,
+                state,
+                now,
+            )
+            self.assertEqual(sent, 3)
+            self.assertEqual(len(telegram.messages), 3)
+            self.assertNotIn("kiaShortsSentDate", state)
+
+            second_batch = first_batch + [
+                {
+                    "gameId": "20260730HTSS02026",
+                    "masterVid": f"media-{index}",
+                    "title": f"쇼츠 {index}",
+                    "videoType": "shortform",
+                    "serviceType": "SPORTS",
+                    "hit": index,
+                }
+                for index in range(4, 6)
+            ]
+            sent = send_due_kia_shorts(
+                FakeClient(game_videos=second_batch),
+                telegram,
+                settings,
+                state,
+                now + timedelta(minutes=10),
+            )
+
+        self.assertEqual(sent, 2)
+        self.assertEqual(len(telegram.messages), 5)
+        self.assertEqual(state["kiaShortsSentDate"], "2026-07-30")
 
 
 class FinalScoreTest(unittest.TestCase):

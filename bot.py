@@ -19,6 +19,7 @@ from parser import (
     format_game_highlights,
     format_kia_highlight,
     format_kia_news_articles,
+    format_naver_short,
     format_player_record_stats,
     format_kia_record,
     format_pitching_decision_update,
@@ -34,6 +35,7 @@ from parser import (
     has_starting_lineups,
     is_game_over,
     kia_news_articles,
+    naver_game_shorts,
     is_batter_result_event,
     is_kia_batting,
     is_kia_batter_event,
@@ -111,6 +113,9 @@ TERMINAL_SCHEDULE_STATUS = {"RESULT", "END", "CANCEL", "CANCELED", "CANCELLED"}
 PITCHING_DECISION_POLL_SECONDS = 60
 KIA_HIGHLIGHT_RETRY_MINUTES = 10
 KIA_HIGHLIGHT_MAX_ATTEMPTS = 12
+KIA_SHORTS_LIMIT = 5
+KIA_SHORTS_RETRY_MINUTES = 10
+KIA_SHORTS_MAX_ATTEMPTS = 12
 
 
 def setup_logging(settings: Settings) -> None:
@@ -1418,6 +1423,7 @@ def schedule_kia_highlight_after_rankings(
 
 
 def send_due_kia_highlight(
+    client: NaverSportsClient,
     telegram: TelegramBot,
     settings: Settings,
     state: dict[str, Any],
@@ -1447,7 +1453,13 @@ def send_due_kia_highlight(
         state["kiaHighlightSentDate"] = target_date_text
         state.pop("nextKiaHighlightAt", None)
         state.pop("kiaHighlightAttemptCount", None)
+        state["kiaShortsDate"] = target_date_text
+        state["kiaShortsGameId"] = str(state.get("kiaHighlightGameId") or "")
+        state["nextKiaShortsAt"] = now.isoformat()
+        state["kiaShortsAttemptCount"] = 0
+        state["kiaShortsSentMediaIds"] = []
         save_state(settings.state_path, state)
+        send_due_kia_shorts(client, telegram, settings, state, now)
         return True
 
     attempts = int(state.get("kiaHighlightAttemptCount") or 0) + 1
@@ -1466,6 +1478,76 @@ def send_due_kia_highlight(
         state.pop("nextKiaHighlightAt", None)
     save_state(settings.state_path, state)
     return False
+
+
+def send_due_kia_shorts(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+    now: datetime,
+) -> int:
+    target_date = str(state.get("kiaShortsDate") or "")
+    game_id = str(state.get("kiaShortsGameId") or "")
+    if (
+        not target_date
+        or not game_id
+        or state.get("kiaShortsSentDate") == target_date
+        or state.get("kiaShortsStoppedDate") == target_date
+    ):
+        return 0
+
+    next_check_at = _parse_dt(state.get("nextKiaShortsAt"))
+    if next_check_at and now < next_check_at:
+        return 0
+
+    sent_ids = {
+        str(media_id)
+        for media_id in state.get("kiaShortsSentMediaIds", [])
+        if media_id
+    }
+    try:
+        videos = unwrap(client.game_videos(game_id), "vodList")
+        shorts = naver_game_shorts(videos, game_id, limit=KIA_SHORTS_LIMIT)
+    except Exception:
+        logging.exception("Failed to fetch Naver shorts for %s.", game_id)
+        shorts = []
+
+    sent_count = 0
+    for short in shorts:
+        media_id = str(short.get("mediaId") or "")
+        if not media_id or media_id in sent_ids:
+            continue
+        telegram.send_message(format_naver_short(short))
+        sent_ids.add(media_id)
+        sent_count += 1
+        state["kiaShortsSentMediaIds"] = list(sent_ids)
+        save_state(settings.state_path, state)
+
+    if len(sent_ids) >= KIA_SHORTS_LIMIT:
+        state["kiaShortsSentDate"] = target_date
+        state.pop("nextKiaShortsAt", None)
+        state.pop("kiaShortsAttemptCount", None)
+        save_state(settings.state_path, state)
+        return sent_count
+
+    attempts = int(state.get("kiaShortsAttemptCount") or 0) + 1
+    state["kiaShortsAttemptCount"] = attempts
+    if attempts < KIA_SHORTS_MAX_ATTEMPTS:
+        state["nextKiaShortsAt"] = (
+            now + timedelta(minutes=KIA_SHORTS_RETRY_MINUTES)
+        ).isoformat()
+    else:
+        state["kiaShortsStoppedDate"] = target_date
+        state.pop("nextKiaShortsAt", None)
+        logging.info(
+            "Only %s Naver shorts found for %s after %s attempts.",
+            len(sent_ids),
+            game_id,
+            attempts,
+        )
+    save_state(settings.state_path, state)
+    return sent_count
 
 
 def refresh_game_status_from_schedule(
@@ -1603,7 +1685,7 @@ def send_daily_rankings_if_all_games_done(
     state.pop("nextDailyRankingCheckAt", None)
     save_state(settings.state_path, state)
     schedule_kia_highlight_after_rankings(settings, state, now, games, cancelled_ids)
-    send_due_kia_highlight(telegram, settings, state, now)
+    send_due_kia_highlight(client, telegram, settings, state, now)
     return True
 
 
@@ -1724,7 +1806,8 @@ def sleep_with_command_polling(
         handle_telegram_commands(client, weather_client, telegram, settings, state, current_game_id(state))
         poll_now = datetime.now(settings.timezone)
         send_due_kia_news(client, telegram, settings, state, poll_now)
-        send_due_kia_highlight(telegram, settings, state, poll_now)
+        send_due_kia_highlight(client, telegram, settings, state, poll_now)
+        send_due_kia_shorts(client, telegram, settings, state, poll_now)
         remaining = max(0, int((deadline - datetime.now(settings.timezone)).total_seconds()))
 
 
@@ -1747,7 +1830,8 @@ def main() -> None:
             now = datetime.now(settings.timezone)
             handle_telegram_commands(client, weather_client, telegram, settings, state, current_game_id(state))
             send_due_kia_news(client, telegram, settings, state, now)
-            send_due_kia_highlight(telegram, settings, state, now)
+            send_due_kia_highlight(client, telegram, settings, state, now)
+            send_due_kia_shorts(client, telegram, settings, state, now)
             game = get_cached_today_game(client, settings, state, now)
 
             if not game:
@@ -1759,6 +1843,7 @@ def main() -> None:
                     state.get("nextDailyRankingCheckAt"),
                     state.get("nextKiaNewsAt"),
                     state.get("nextKiaHighlightAt"),
+                    state.get("nextKiaShortsAt"),
                 )
                 logging.info("No KIA game found today. Sleeping %ss.", sleep_seconds)
                 sleep_with_command_polling(client, weather_client, telegram, settings, state, sleep_seconds)
@@ -1796,6 +1881,13 @@ def main() -> None:
                     "kiaHighlightAttemptCount": state.get("kiaHighlightAttemptCount"),
                     "kiaHighlightSentDate": state.get("kiaHighlightSentDate"),
                     "kiaHighlightStoppedDate": state.get("kiaHighlightStoppedDate"),
+                    "kiaShortsDate": state.get("kiaShortsDate"),
+                    "kiaShortsGameId": state.get("kiaShortsGameId"),
+                    "nextKiaShortsAt": state.get("nextKiaShortsAt"),
+                    "kiaShortsAttemptCount": state.get("kiaShortsAttemptCount"),
+                    "kiaShortsSentMediaIds": state.get("kiaShortsSentMediaIds", []),
+                    "kiaShortsSentDate": state.get("kiaShortsSentDate"),
+                    "kiaShortsStoppedDate": state.get("kiaShortsStoppedDate"),
                 }
                 save_state(settings.state_path, state)
 
@@ -1821,6 +1913,7 @@ def main() -> None:
                     state.get("nextPreviewCheckAt"),
                     state.get("nextKiaNewsAt"),
                     state.get("nextKiaHighlightAt"),
+                    state.get("nextKiaShortsAt"),
                 )
                 logging.debug(
                     "KIA game %s is outside polling window. Sleeping %ss.",
@@ -1935,6 +2028,7 @@ def main() -> None:
                     state.get("nextDailyRankingCheckAt"),
                     state.get("nextKiaNewsAt"),
                     state.get("nextKiaHighlightAt"),
+                    state.get("nextKiaShortsAt"),
                 )
                 logging.info("Game %s already ended. Sleeping %ss.", summary.game_id, sleep_seconds)
                 sleep_with_command_polling(client, weather_client, telegram, settings, state, sleep_seconds)
