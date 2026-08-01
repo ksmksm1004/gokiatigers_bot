@@ -56,6 +56,9 @@ class NaverSportsClient:
     def preview(self, game_id: str) -> dict[str, Any]:
         return self.get_json(f"/schedule/games/{game_id}/preview")
 
+    def game_detail(self, game_id: str) -> dict[str, Any]:
+        return self.get_json(f"/schedule/games/{game_id}")
+
     def relay(self, game_id: str, inning: int | None = None) -> dict[str, Any]:
         params = {"inning": inning} if inning else None
         return self.get_json(f"/schedule/games/{game_id}/relay", params=params)

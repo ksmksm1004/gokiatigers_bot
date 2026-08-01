@@ -1,8 +1,9 @@
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from naver_weather import format_stadium_weather, parse_weather_page, resolve_stadium_weather_region
+from naver_weather import NaverWeatherClient, format_stadium_weather, parse_weather_page, resolve_stadium_weather_region
 
 
 class NaverWeatherTest(unittest.TestCase):
@@ -37,6 +38,12 @@ class NaverWeatherTest(unittest.TestCase):
         self.assertIn("미세먼지 좋음 | 초미세먼지 보통", message)
         self.assertIn("01시 맑음 25.0° | 강수 - (0mm) | 바람 3.2m/s", message)
         self.assertIn("02시 흐림 24.0° | 강수 60% (2mm) | 바람 4.1m/s", message)
+
+        client = NaverWeatherClient()
+        with patch.object(client, "_get_region_html", return_value=sample):
+            conditions = client.stadium_current_conditions("광주")
+        self.assertEqual(conditions["wetrTxt"], "구름많음")
+        self.assertEqual(conditions["oneHourRainAmt"], "0.0")
 
 
 if __name__ == "__main__":

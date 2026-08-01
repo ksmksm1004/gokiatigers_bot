@@ -54,9 +54,20 @@ class NaverWeatherClient:
         if region is None:
             return f"구장 날씨 위치를 찾지 못했습니다: {stadium or '-'}"
 
-        html = self._get_region_html(region.code)
-        data = parse_weather_page(html)
+        data = self._stadium_weather_data(region)
         return format_stadium_weather(stadium, region, data, now, hours)
+
+    def stadium_current_conditions(self, stadium: str) -> dict[str, Any]:
+        region = resolve_stadium_weather_region(stadium)
+        if region is None:
+            return {}
+        data = self._stadium_weather_data(region)
+        current = _first_block_value(data, "talkHeader").get("nowFcastInfo", {})
+        return current if isinstance(current, dict) else {}
+
+    def _stadium_weather_data(self, region: WeatherRegion) -> dict[str, Any]:
+        html = self._get_region_html(region.code)
+        return parse_weather_page(html)
 
     def _get_region_html(self, region_code: str) -> str:
         response = self.session.get(f"{NAVER_WEATHER_BASE}/{region_code}", timeout=10)

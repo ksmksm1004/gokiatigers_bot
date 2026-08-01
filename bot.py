@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -334,10 +335,12 @@ def is_after_game_start(summary, settings: Settings, now: datetime) -> bool:
 def is_cancelled_game(game: dict[str, Any]) -> bool:
     cancel_flag = str(game.get("cancelFlag") or "").upper()
     status = str(game.get("statusCode") or "").upper()
-    return cancel_flag == "Y" or status in {"CANCEL", "CANCELED", "CANCELLED"}
+    return bool(game.get("cancel")) or cancel_flag == "Y" or status in {"CANCEL", "CANCELED", "CANCELLED"}
 
 
 def send_cancelled_once(
+    client: NaverSportsClient,
+    weather_client: NaverWeatherClient,
     telegram: TelegramBot,
     settings: Settings,
     state: dict[str, Any],
@@ -346,11 +349,18 @@ def send_cancelled_once(
 ) -> None:
     if state.get("cancelSentGameId") == summary.game_id:
         return
-    reason = "우천취소" if str(game.get("cancelFlag") or "").upper() == "Y" else "경기취소"
+    stadium = summary.stadium or str(game.get("stadium") or "")
+    reason = resolve_cancellation_reason(
+        client,
+        weather_client,
+        summary.game_id,
+        stadium,
+        game,
+    )
     lines = [
         "KIA 경기 취소",
         f"{summary.away_name or game.get('aName', '원정')} vs {summary.home_name or game.get('hName', '홈')}",
-        f"{summary.stadium or game.get('stadium', '')} {reason}".strip(),
+        f"{stadium} {reason}".strip(),
     ]
     telegram.send_message("\n".join(line for line in lines if line))
     state["cancelSentGameId"] = summary.game_id
@@ -359,6 +369,87 @@ def send_cancelled_once(
     cancelled_ids.add(summary.game_id)
     state["cancelledGameIds"] = sorted(cancelled_ids)
     save_state(settings.state_path, state)
+
+
+def resolve_cancellation_reason(
+    client: NaverSportsClient,
+    weather_client: NaverWeatherClient,
+    game_id: str,
+    stadium: str,
+    game: dict[str, Any],
+) -> str:
+    reason = _explicit_cancellation_reason(game)
+    detailed_game: dict[str, Any] = {}
+    if not reason:
+        try:
+            detailed_game = unwrap(client.game_detail(game_id), "game")
+            reason = _explicit_cancellation_reason(detailed_game)
+        except Exception:
+            logging.exception("Failed to fetch cancellation details for %s.", game_id)
+    if reason:
+        return reason
+
+    try:
+        conditions = weather_client.stadium_current_conditions(stadium)
+    except Exception:
+        logging.exception("Failed to fetch cancellation weather for %s.", game_id)
+        conditions = {}
+
+    weather_text = str(conditions.get("wetrTxt") or "")
+    rain_amount = conditions.get("oneHourRainAmt", conditions.get("rainAmt"))
+    fallback_weather = detailed_game.get("weatherInfo") or game.get("weatherInfo") or {}
+    if not weather_text and isinstance(fallback_weather, dict):
+        weather_text = str(fallback_weather.get("weather") or "")
+
+    if _is_rain_weather(weather_text) or _positive_rain_amount(rain_amount):
+        return "우천 취소"
+    if "맑음" in weather_text or _zero_rain_amount(rain_amount):
+        return "폭염 취소"
+    return "경기 취소"
+
+
+def _explicit_cancellation_reason(game: dict[str, Any]) -> str:
+    keys = (
+        "cancelReason",
+        "cancellationReason",
+        "reason",
+        "statusInfo",
+        "info",
+        "generalTitle",
+        "generalInfo3",
+        "title",
+    )
+    for key in keys:
+        text = str(game.get(key) or "").strip()
+        normalized = text.replace(" ", "")
+        if "폭염" in normalized:
+            return "폭염 취소"
+        if any(word in normalized for word in ("우천", "강우", "호우")):
+            return "우천 취소"
+        if normalized and normalized not in {"경기취소", "취소"} and "취소" in normalized:
+            return text
+    return ""
+
+
+def _is_rain_weather(weather_text: str) -> bool:
+    return any(word in weather_text for word in ("비", "소나기", "뇌우", "눈"))
+
+
+def _rain_amount_number(value: Any) -> float | None:
+    if value in (None, "", "-"):
+        return None
+    match = re.search(r"\d+(?:\.\d+)?", str(value).replace(",", ""))
+    return float(match.group()) if match else None
+
+
+def _positive_rain_amount(value: Any) -> bool:
+    amount = _rain_amount_number(value)
+    return amount is not None and amount > 0
+
+
+def _zero_rain_amount(value: Any) -> bool:
+    amount = _rain_amount_number(value)
+    return amount == 0
 
 
 def send_preview_once(
@@ -1895,7 +1986,15 @@ def main() -> None:
                 detailed_game = get_detailed_game(client, settings, state, game, force=True)
                 summary = parse_game_summary(detailed_game, settings.naver_game_id)
                 if is_cancelled_game(detailed_game):
-                    send_cancelled_once(telegram, settings, state, summary, detailed_game)
+                    send_cancelled_once(
+                        client,
+                        weather_client,
+                        telegram,
+                        settings,
+                        state,
+                        summary,
+                        detailed_game,
+                    )
                     send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                     sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.idle_poll_seconds)
                     continue

@@ -15,6 +15,7 @@ from bot import (
     record_options_keyboard,
     remember_plate_result,
     remember_plate_rbi_baseline,
+    resolve_cancellation_reason,
     resume_relay_for_game,
     schedule_kia_highlight_after_rankings,
     send_daily_rankings_if_all_games_done,
@@ -91,6 +92,60 @@ class RecordOptionCallbackTest(unittest.TestCase):
         self.assertEqual(keyboard["inline_keyboard"][0][0]["text"], "타율")
         self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], "rec:hitter:0")
         self.assertEqual(option_from_callback_data("rec:hitter:1"), ("hitter", "홈런"))
+
+
+class CancellationReasonTest(unittest.TestCase):
+    class Client:
+        def __init__(self, detail=None):
+            self.detail = detail or {"statusInfo": "경기취소"}
+
+        def game_detail(self, game_id):
+            return {"result": {"game": self.detail}}
+
+    class WeatherClient:
+        def __init__(self, conditions):
+            self.conditions = conditions
+            self.calls = 0
+
+        def stadium_current_conditions(self, stadium):
+            self.calls += 1
+            return self.conditions
+
+    def test_explicit_api_reason_takes_priority(self):
+        weather = self.WeatherClient({"wetrTxt": "비", "oneHourRainAmt": "5"})
+
+        reason = resolve_cancellation_reason(
+            self.Client(),
+            weather,
+            "game1",
+            "창원",
+            {"cancelReason": "폭염으로 경기취소"},
+        )
+
+        self.assertEqual(reason, "폭염 취소")
+        self.assertEqual(weather.calls, 0)
+
+    def test_clear_or_zero_rain_weather_means_heat_cancellation(self):
+        reason = resolve_cancellation_reason(
+            self.Client(),
+            self.WeatherClient({"wetrTxt": "맑음", "oneHourRainAmt": "0.0"}),
+            "game1",
+            "창원",
+            {"cancelFlag": "Y"},
+        )
+
+        self.assertEqual(reason, "폭염 취소")
+
+    def test_rain_weather_means_rain_cancellation(self):
+        reason = resolve_cancellation_reason(
+            self.Client(),
+            self.WeatherClient({"wetrTxt": "비", "oneHourRainAmt": "2.5"}),
+            "game1",
+            "창원",
+            {"cancelFlag": "Y"},
+        )
+
+        self.assertEqual(reason, "우천 취소")
 
 
 class KiaNewsScheduleTest(unittest.TestCase):
