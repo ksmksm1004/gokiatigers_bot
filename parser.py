@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from urllib.parse import urlencode
 
@@ -246,6 +246,7 @@ def get_starting_lineup(preview: dict[str, Any], side: str) -> list[dict[str, An
 def lineup_media_items(preview: dict[str, Any], side: str) -> list[tuple[str, str]]:
     info = preview.get("gameInfo", {})
     team_name = info.get("aName" if side == "away" else "hName", side)
+    cache_key = info.get("gdate") or info.get("gameDate")
     players = get_starting_lineup(preview, side)
     items: list[tuple[str, str]] = []
     for player in players:
@@ -261,7 +262,7 @@ def lineup_media_items(preview: dict[str, Any], side: str) -> list[tuple[str, st
                 f"{player.get('positionName', '-')} / {player.get('batsThrows', '-')}",
             ]
         )
-        items.append((PLAYER_IMAGE.format(pcode=code), caption))
+        items.append((player_image_url(code, cache_key), caption))
     return items[:10]
 
 
@@ -1112,7 +1113,12 @@ def player_photo_url(event: RelayEvent) -> str | None:
         pcode = event.player_code or event.batter_code
     if not pcode:
         return None
-    return PLAYER_IMAGE.format(pcode=pcode)
+    return player_image_url(pcode)
+
+
+def player_image_url(pcode: Any, cache_key: Any = None) -> str:
+    version = re.sub(r"\D", "", str(cache_key or date.today().isoformat()))
+    return f"{PLAYER_IMAGE.format(pcode=pcode)}&v={version}"
 
 
 def is_game_over(events: list[RelayEvent]) -> bool:

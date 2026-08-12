@@ -13,8 +13,10 @@ from parser import (
     format_team_record_stats,
     has_starting_lineups,
     kia_news_articles,
+    lineup_media_items,
     parse_relay_events,
     plate_result_history,
+    player_image_url,
     record_options_message,
     resolve_record_option,
     should_send_relay_event,
@@ -66,6 +68,20 @@ class StartingLineupTest(unittest.TestCase):
         }
 
         self.assertFalse(has_starting_lineups(preview))
+
+    def test_lineup_photos_use_game_date_to_refresh_telegram_cache(self):
+        preview = {
+            "gameInfo": {"aName": "KIA", "gdate": 20260812},
+            "awayTeamLineUp": {"fullLineUp": self.lineup("away")},
+        }
+
+        items = lineup_media_items(preview, "away")
+
+        self.assertTrue(items[0][0].endswith("?type=w150&v=20260812"))
+        self.assertEqual(
+            player_image_url("62700", "2026-08-12"),
+            "https://sports-phinf.pstatic.net/player/kbo/default/62700.png?type=w150&v=20260812",
+        )
 
 
 class RelayParsingTest(unittest.TestCase):
