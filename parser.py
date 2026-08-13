@@ -9,6 +9,10 @@ from urllib.parse import urlencode
 
 KIA_CODE = "HT"
 PLAYER_IMAGE = "https://sports-phinf.pstatic.net/player/kbo/default/{pcode}.png?type=w150"
+PLAYER_IMAGE_OVERRIDES = {
+    # Naver's stable URL can leave Telegram serving the pre-trade Hanwha image.
+    "62700": "https://tigers.co.kr/files/playerImg/tigersImg2/2026_30_C_new.png",
+}
 IMPORTANT_WORDS = (
     "홈런",
     "홈인",
@@ -1117,8 +1121,13 @@ def player_photo_url(event: RelayEvent) -> str | None:
 
 
 def player_image_url(pcode: Any, cache_key: Any = None) -> str:
+    code = str(pcode)
     version = re.sub(r"\D", "", str(cache_key or date.today().isoformat()))
-    return f"{PLAYER_IMAGE.format(pcode=pcode)}&v={version}"
+    override = PLAYER_IMAGE_OVERRIDES.get(code)
+    if override:
+        separator = "&" if "?" in override else "?"
+        return f"{override}{separator}v={version}"
+    return f"{PLAYER_IMAGE.format(pcode=code)}&v={version}"
 
 
 def is_game_over(events: list[RelayEvent]) -> bool:

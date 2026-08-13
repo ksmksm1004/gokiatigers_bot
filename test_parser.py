@@ -79,8 +79,12 @@ class StartingLineupTest(unittest.TestCase):
 
         self.assertTrue(items[0][0].endswith("?type=w150&v=20260812"))
         self.assertEqual(
-            player_image_url("62700", "2026-08-12"),
-            "https://sports-phinf.pstatic.net/player/kbo/default/62700.png?type=w150&v=20260812",
+            player_image_url("52605", "2026-08-12"),
+            "https://sports-phinf.pstatic.net/player/kbo/default/52605.png?type=w150&v=20260812",
+        )
+        self.assertEqual(
+            player_image_url("62700", "2026-08-13"),
+            "https://tigers.co.kr/files/playerImg/tigersImg2/2026_30_C_new.png?v=20260813",
         )
 
 
