@@ -262,6 +262,37 @@ class KiaNewsFormatTest(unittest.TestCase):
 
 
 class CompactBatterFormatTest(unittest.TestCase):
+    def test_relay_header_includes_current_out_count(self):
+        event = RelayEvent(
+            event_id=1,
+            inning=7,
+            half="말",
+            text="김도영 : 좌익수 앞 1루타",
+            home_score=4,
+            away_score=3,
+            current_state={"out": "2"},
+        )
+
+        message = format_relay_event(event, "삼성", "KIA")
+
+        self.assertTrue(message.startswith("중계 | 7회말 (2 out)\n"))
+
+    def test_attack_start_header_does_not_include_out_count(self):
+        event = RelayEvent(
+            event_id=1,
+            inning=7,
+            half="말",
+            text="7회말 KIA 공격",
+            home_score=4,
+            away_score=3,
+            current_state={"out": "0"},
+        )
+
+        message = format_relay_event(event, "삼성", "KIA")
+
+        self.assertTrue(message.startswith("중계 | 7회말\n"))
+        self.assertNotIn("out)", message)
+
     def test_relay_batter_snapshot_uses_short_result_format(self):
         event = RelayEvent(
             event_id=1,
@@ -603,7 +634,7 @@ class CompactBatterFormatTest(unittest.TestCase):
         self.assertIn("9 김규성 | .245 | 0-0", message)
         self.assertIn("\n\n성영탁 | 22개 | 0 ⅔이닝", message)
 
-    def test_first_kia_attack_only_stores_pitcher_snapshot(self):
+    def test_first_kia_attack_includes_pitcher_stats_after_defense(self):
         relay = {
             "awayLineup": {
                 "pitcher": [
@@ -627,8 +658,67 @@ class CompactBatterFormatTest(unittest.TestCase):
 
         pitcher_lines, snapshot = changed_pitcher_lines(relay, "away", None)
 
-        self.assertEqual(pitcher_lines, [])
+        self.assertEqual(
+            pitcher_lines,
+            ["성영탁 | 22개 | 0 ⅔이닝 4피안타 4실점 3자책 1사사구 2삼진 ERA 4.11"],
+        )
         self.assertEqual(snapshot["50054"]["inn"], "0.2")
+
+    def test_first_kia_attack_omits_pitcher_before_any_pitch(self):
+        relay = {
+            "awayLineup": {
+                "pitcher": [
+                    {
+                        "pcode": "50054",
+                        "name": "성영탁",
+                        "seqno": 1,
+                        "ballCount": 0,
+                        "inn": "0.0",
+                        "hit": 0,
+                        "run": 0,
+                        "er": 0,
+                        "bb": 0,
+                        "hbp": 0,
+                        "kk": 0,
+                        "seasonEra": "4.11",
+                    }
+                ]
+            }
+        }
+
+        pitcher_lines, snapshot = changed_pitcher_lines(relay, "away", None)
+
+        self.assertEqual(pitcher_lines, [])
+        self.assertIn("50054", snapshot)
+
+    def test_first_snapshot_only_displays_current_pitcher(self):
+        relay = {
+            "homeLineup": {
+                "pitcher": [
+                    {
+                        "pcode": "starter",
+                        "name": "선발",
+                        "seqno": 1,
+                        "ballCount": 80,
+                        "inn": "5.0",
+                        "seasonEra": "3.00",
+                    },
+                    {
+                        "pcode": "reliever",
+                        "name": "불펜",
+                        "seqno": 2,
+                        "ballCount": 12,
+                        "inn": "1.0",
+                        "seasonEra": "2.00",
+                    },
+                ]
+            }
+        }
+
+        pitcher_lines, _ = changed_pitcher_lines(relay, "home", None)
+
+        self.assertEqual(len(pitcher_lines), 1)
+        self.assertTrue(pitcher_lines[0].startswith("불펜 | 12개 |"))
 
     def test_video_review_is_sent_for_any_team(self):
         event = RelayEvent(

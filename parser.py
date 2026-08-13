@@ -476,7 +476,9 @@ def changed_pitcher_lines(
 ) -> tuple[list[str], dict[str, dict[str, Any]]]:
     current = pitcher_snapshot(relay, side)
     if not previous_snapshot:
-        return [], current
+        active = [pitcher for pitcher in current.values() if _pitcher_has_game_activity(pitcher)]
+        active.sort(key=lambda pitcher: _to_int(pitcher.get("seqno")))
+        return ([format_pitcher_snapshot(active[-1])] if active else []), current
 
     changed = []
     for code, pitcher in current.items():
@@ -490,6 +492,13 @@ def changed_pitcher_lines(
 def _pitcher_changed_since_snapshot(previous: dict[str, Any], current: dict[str, Any]) -> bool:
     keys = ("ballCount", "inn", "hit", "run", "er", "bb", "hbp", "kk")
     return any(str(previous.get(key, 0)) != str(current.get(key, 0)) for key in keys)
+
+
+def _pitcher_has_game_activity(pitcher: dict[str, Any]) -> bool:
+    if any(_to_int(pitcher.get(key)) > 0 for key in ("ballCount", "hit", "run", "er", "bb", "hbp", "kk")):
+        return True
+    innings = str(pitcher.get("inn") or "").strip()
+    return innings not in {"", "0", "0.0", "0 0/3"}
 
 
 def format_pitcher_snapshot(pitcher: dict[str, Any]) -> str:
@@ -637,8 +646,10 @@ def format_relay_event(
     show_player_stats: bool = True,
 ) -> str:
     prefix = "득점" if event.is_score_event else "교체" if event.is_pitching_change else "중계"
+    out_count = _relay_out_count(event)
+    out_text = f" ({out_count} out)" if out_count is not None and not event.is_attack_start else ""
     lines = [
-        f"{prefix} | {event.inning}회{event.half}",
+        f"{prefix} | {event.inning}회{event.half}{out_text}",
         f"{away_name} {event.away_score} : {event.home_score} {home_name}",
         event.text,
     ]
@@ -651,6 +662,18 @@ def format_relay_event(
     if stats:
         lines += ["", stats]
     return "\n".join(lines)
+
+
+def _relay_out_count(event: RelayEvent) -> int | None:
+    state = event.current_state or {}
+    value = state.get("out")
+    if value in (None, ""):
+        return None
+    try:
+        out_count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return out_count if 0 <= out_count <= 3 else None
 
 
 def format_batter_snapshot(
