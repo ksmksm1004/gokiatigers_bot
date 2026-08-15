@@ -40,6 +40,7 @@ from parser import (
     is_batter_result_event,
     is_kia_batting,
     is_kia_batter_event,
+    is_kia_pitching,
     kia_half_summary_message,
     lineup_media_items,
     parse_game_summary,
@@ -48,6 +49,7 @@ from parser import (
     plate_result_label,
     plate_result_history,
     player_photo_url,
+    pitcher_photo_url,
     record_options_message,
     resolve_record_option,
     should_send_relay_event,
@@ -1115,7 +1117,12 @@ def dispatch_relay_events(
         plate_results = state_plate_labels(state, event.batter_code) or plate_result_history(all_events, event, player_record)
         message = format_relay_event_with_context(event, away_name, home_name, previous_plate, player_record, plate_results)
         photo = None
-        if is_kia_batter_event(event, home_code, away_code, settings.team_code):
+        if (
+            event.is_pitching_change
+            and is_kia_pitching(event, home_code, away_code, settings.team_code)
+        ):
+            photo = pitcher_photo_url(event)
+        elif is_kia_batter_event(event, home_code, away_code, settings.team_code):
             photo = player_photo_url(event)
         elif event.is_score_event and previous_plate and is_kia_batter_event(previous_plate, home_code, away_code, settings.team_code):
             photo = player_photo_url(previous_plate)

@@ -320,6 +320,14 @@ def is_kia_batting(event: RelayEvent, home_code: str, away_code: str, team_code:
     return False
 
 
+def is_kia_pitching(event: RelayEvent, home_code: str, away_code: str, team_code: str = KIA_CODE) -> bool:
+    if event.home_or_away == "1":
+        return away_code == team_code
+    if event.home_or_away == "0":
+        return home_code == team_code
+    return False
+
+
 def batting_team_name(event: RelayEvent, home_name: str, away_name: str) -> str:
     return home_name if event.home_or_away == "1" else away_name
 
@@ -1138,6 +1146,13 @@ def player_photo_url(event: RelayEvent) -> str | None:
     pcode = player.get("pcode") or player.get("playerCode") or player.get("pCode")
     if not pcode:
         pcode = event.player_code or event.batter_code
+    if not pcode:
+        return None
+    return player_image_url(pcode)
+
+
+def pitcher_photo_url(event: RelayEvent) -> str | None:
+    pcode = (event.current_state or {}).get("pitcher")
     if not pcode:
         return None
     return player_image_url(pcode)

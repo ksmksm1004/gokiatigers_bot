@@ -27,6 +27,7 @@ from bot import (
     with_state_plate_totals,
 )
 from config import Settings
+from parser import RelayEvent
 
 
 class FakeClient:
@@ -92,6 +93,72 @@ class RecordOptionCallbackTest(unittest.TestCase):
         self.assertEqual(keyboard["inline_keyboard"][0][0]["text"], "타율")
         self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], "rec:hitter:0")
         self.assertEqual(option_from_callback_data("rec:hitter:1"), ("hitter", "홈런"))
+
+
+class PitchingChangePhotoTest(unittest.TestCase):
+    def test_kia_pitching_change_sends_new_pitcher_photo(self):
+        event = RelayEvent(
+            event_id=1,
+            inning=7,
+            half="초",
+            text="투수 전상현 : 투수 조상우 (으)로 교체",
+            home_score=4,
+            away_score=3,
+            home_or_away="0",
+            current_state={"pitcher": "63342", "out": "1"},
+        )
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+
+        dispatch_relay_events(
+            telegram,
+            settings,
+            {},
+            {},
+            [event],
+            [event],
+            set(),
+            "삼성",
+            "KIA",
+            "SS",
+            "HT",
+        )
+
+        self.assertEqual(len(telegram.photos), 1)
+        photo_url, caption = telegram.photos[0]
+        self.assertIn("/63342.png?type=w150", photo_url)
+        self.assertTrue(caption.startswith("교체 | 7회초 (1 out)"))
+
+    def test_opponent_pitching_change_does_not_send_photo(self):
+        event = RelayEvent(
+            event_id=1,
+            inning=7,
+            half="말",
+            text="투수 원태인 : 투수 김재윤 (으)로 교체",
+            home_score=4,
+            away_score=3,
+            home_or_away="1",
+            current_state={"pitcher": "65062", "out": "0"},
+        )
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+
+        dispatch_relay_events(
+            telegram,
+            settings,
+            {},
+            {},
+            [event],
+            [event],
+            set(),
+            "삼성",
+            "KIA",
+            "SS",
+            "HT",
+        )
+
+        self.assertEqual(telegram.photos, [])
+        self.assertEqual(len(telegram.messages), 1)
 
 
 class CancellationReasonTest(unittest.TestCase):
