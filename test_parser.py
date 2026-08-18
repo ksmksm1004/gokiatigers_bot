@@ -11,12 +11,15 @@ from parser import (
     format_relay_event,
     format_relay_event_with_context,
     format_team_record_stats,
+    half_out_results,
     has_starting_lineups,
+    kia_half_summary_message,
     kia_news_articles,
     lineup_media_items,
     parse_relay_events,
     plate_result_history,
     player_image_url,
+    previous_half_out_labels,
     record_options_message,
     resolve_record_option,
     should_send_relay_event,
@@ -259,6 +262,104 @@ class KiaNewsFormatTest(unittest.TestCase):
         self.assertIn("1. KIA 타선 폭발 (A)", message)
         self.assertIn("https://m.sports.naver.com/kbaseball/article/001/1", message)
         self.assertIn("2. 기아 불펜 점검 (C)", message)
+
+
+class HalfOutSummaryTest(unittest.TestCase):
+    def test_out_results_follow_api_out_increases_and_include_runner_out(self):
+        events = [
+            RelayEvent(1, 7, "초", "박재현 : 우익수 뒤 2루타", 2, 3, batter_code="1", player_name="박재현", current_state={"out": "0"}),
+            RelayEvent(2, 7, "초", "김선빈 : 유격수 땅볼 아웃", 2, 3, batter_code="2", player_name="김선빈", current_state={"out": "1"}),
+            RelayEvent(3, 7, "초", "2루주자 박재현 : 태그아웃", 2, 3, batter_code="2", current_state={"out": "2"}),
+            RelayEvent(4, 7, "초", "김도영 : 좌익수 뒤 홈런", 2, 4, batter_code="3", player_name="김도영", current_state={"out": "2"}),
+            RelayEvent(5, 7, "초", "카스트로 : 중견수 플라이 아웃", 2, 4, batter_code="4", player_name="카스트로", current_state={"out": "3"}),
+        ]
+
+        results = half_out_results(events, 7, "초")
+
+        self.assertEqual([result.tagged_label for result in results], ["땅볼1", "태그2", "플라이3"])
+        self.assertEqual(results[0].player_code, "2")
+        self.assertEqual(results[1].player_name, "박재현")
+
+    def test_double_play_uses_both_out_numbers(self):
+        events = [
+            RelayEvent(1, 6, "말", "허인서 : 삼진 아웃", 2, 3, batter_code="7", current_state={"out": "1"}),
+            RelayEvent(2, 6, "말", "이도윤 : 유격수 병살타 아웃", 2, 3, batter_code="8", current_state={"out": "3"}),
+            RelayEvent(3, 6, "말", "1루주자 이원석 : 포스아웃", 2, 3, batter_code="8", current_state={"out": "3"}),
+        ]
+        attack_start = RelayEvent(4, 7, "초", "7회초 KIA 공격", 2, 3, home_or_away="0")
+
+        labels = previous_half_out_labels([*events, attack_start], attack_start)
+
+        self.assertEqual(labels, ["삼진1", "병살타23"])
+
+    def test_expected_batters_appends_previous_half_outs_to_score(self):
+        event = RelayEvent(
+            4,
+            7,
+            "초",
+            "7회초 KIA 공격",
+            2,
+            3,
+            batter_code="1",
+            home_or_away="0",
+        )
+        relay = {
+            "awayLineup": {
+                "batter": [
+                    {"pcode": "1", "name": "박재현", "batOrder": 1, "seasonHra": "0.284", "ab": 3, "hit": 1},
+                    {"pcode": "2", "name": "김선빈", "batOrder": 2, "seasonHra": "0.272", "ab": 2, "hit": 0},
+                    {"pcode": "3", "name": "김도영", "batOrder": 3, "seasonHra": "0.294", "ab": 2, "hit": 0},
+                ]
+            }
+        }
+
+        message = expected_batters_message(
+            event,
+            relay,
+            "HH",
+            "HT",
+            "KIA",
+            "한화",
+            "HT",
+            previous_out_labels=["삼진1", "병살타23"],
+        )
+
+        self.assertIn("KIA 3 : 2 한화 (삼진1 병살타23)", message)
+
+    def test_kia_half_summary_appends_out_to_each_player(self):
+        events = [
+            RelayEvent(1, 7, "초", "박재현 : 우익수 뒤 2루타", 2, 3, batter_code="1", player_name="박재현", current_state={"out": "0"}),
+            RelayEvent(2, 7, "초", "김선빈 : 유격수 땅볼 아웃", 2, 3, batter_code="2", player_name="김선빈", current_state={"out": "1"}),
+            RelayEvent(3, 7, "초", "2루주자 박재현 : 태그아웃", 2, 3, batter_code="2", current_state={"out": "2"}),
+            RelayEvent(4, 7, "초", "김도영 : 좌익수 뒤 홈런", 2, 4, batter_code="3", player_name="김도영", current_state={"out": "2"}),
+            RelayEvent(5, 7, "초", "카스트로 : 중견수 플라이 아웃", 2, 4, batter_code="4", player_name="카스트로", current_state={"out": "3"}),
+        ]
+        finished_by = RelayEvent(6, 7, "말", "7회말 한화 공격", 2, 4, home_or_away="1")
+        relay = {
+            "awayLineup": {
+                "batter": [
+                    {"pcode": "1", "name": "박재현", "batOrder": 1, "seasonHra": "0.286", "ab": 4, "hit": 2, "rbi": 1},
+                    {"pcode": "2", "name": "김선빈", "batOrder": 2, "seasonHra": "0.271", "ab": 3, "hit": 0, "bb": 1},
+                    {"pcode": "3", "name": "김도영", "batOrder": 3, "seasonHra": "0.296", "ab": 3, "hit": 1, "hr": 1},
+                    {"pcode": "4", "name": "카스트로", "batOrder": 4, "seasonHra": "0.350", "ab": 4, "hit": 2},
+                ]
+            }
+        }
+
+        message = kia_half_summary_message(
+            events,
+            relay,
+            finished_by,
+            "HH",
+            "HT",
+            "KIA",
+            "한화",
+            "HT",
+        )
+
+        self.assertIn("1 박재현 | .286 | 4타수 2안타 1타점 | 태그2", message)
+        self.assertIn("2 김선빈 | .271 | 3타수 1볼넷 | 땅볼1", message)
+        self.assertIn("4 카스트로 | .350 | 4타수 2안타 | 플라이3", message)
 
 
 class CompactBatterFormatTest(unittest.TestCase):

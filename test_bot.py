@@ -886,6 +886,100 @@ class TeamScheduleTest(unittest.TestCase):
 
 
 class KiaHalfSummaryTest(unittest.TestCase):
+    def test_process_relay_loads_previous_inning_for_away_kia_out_summary(self):
+        current_relay = {
+            "awayLineup": {
+                "batter": [
+                    {"pcode": "1", "name": "박재현", "batOrder": 1, "seasonHra": "0.284", "ab": 3, "hit": 1},
+                    {"pcode": "2", "name": "김선빈", "batOrder": 2, "seasonHra": "0.272", "ab": 2, "hit": 0},
+                    {"pcode": "3", "name": "김도영", "batOrder": 3, "seasonHra": "0.294", "ab": 2, "hit": 0},
+                ]
+            },
+            "textRelays": [
+                {
+                    "inn": 7,
+                    "homeOrAway": "0",
+                    "title": "7회초 KIA 공격",
+                    "textOptions": [
+                        {
+                            "seqno": 346,
+                            "text": "7회초 KIA 공격",
+                            "currentGameState": {
+                                "awayScore": 3,
+                                "homeScore": 2,
+                                "batter": "1",
+                                "out": "0",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        previous_relay = {
+            "textRelays": [
+                {
+                    "inn": 6,
+                    "homeOrAway": "1",
+                    "title": "7번타자 허인서",
+                    "textOptions": [
+                        {
+                            "seqno": 341,
+                            "text": "허인서 : 삼진 아웃",
+                            "currentGameState": {"awayScore": 3, "homeScore": 2, "batter": "7", "out": "1"},
+                        }
+                    ],
+                },
+                {
+                    "inn": 6,
+                    "homeOrAway": "1",
+                    "title": "8번타자 이도윤",
+                    "textOptions": [
+                        {
+                            "seqno": 344,
+                            "text": "이도윤 : 유격수 병살타 아웃",
+                            "currentGameState": {"awayScore": 3, "homeScore": 2, "batter": "8", "out": "3"},
+                        },
+                        {
+                            "seqno": 345,
+                            "text": "1루주자 이원석 : 포스아웃",
+                            "currentGameState": {"awayScore": 3, "homeScore": 2, "batter": "8", "out": "3"},
+                        },
+                    ],
+                },
+            ]
+        }
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            state = {
+                "lastRelaySeq": 345,
+                "relayBootstrapped": True,
+                "kiaHalfSummariesSent": [],
+            }
+            telegram = FakeTelegram()
+            client = FakeClient(relay=current_relay, relay_by_inning={6: previous_relay})
+
+            process_relay(
+                client,
+                telegram,
+                settings,
+                state,
+                "game1",
+                "KIA",
+                "한화",
+                "HT",
+                "HH",
+            )
+
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertIn("KIA 3 : 2 한화 (삼진1 병살타23)", telegram.messages[0])
+
     def test_process_relay_loads_previous_inning_for_home_kia_summary(self):
         current_relay = {
             "homeLineup": {

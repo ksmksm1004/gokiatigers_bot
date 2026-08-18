@@ -50,6 +50,7 @@ from parser import (
     plate_result_history,
     player_photo_url,
     pitcher_photo_url,
+    previous_half_out_labels,
     record_options_message,
     resolve_record_option,
     should_send_relay_event,
@@ -927,7 +928,7 @@ def process_relay(
 
     last_seq = int(state.get("lastRelaySeq") or 0)
     sent_summaries = set(state.get("kiaHalfSummariesSent", []))
-    relay, events = include_previous_kia_half(
+    relay, events = include_previous_half_events(
         client,
         game_id,
         relay,
@@ -936,6 +937,7 @@ def process_relay(
         home_code,
         away_code,
         settings.team_code,
+        last_seq,
     )
     if last_seq == 0 and not state.get("relayBootstrapped"):
         latest = events[-1]
@@ -1012,7 +1014,7 @@ def process_relay(
     return is_game_over(events)
 
 
-def include_previous_kia_half(
+def include_previous_half_events(
     client: NaverSportsClient,
     game_id: str,
     relay: dict[str, Any],
@@ -1021,13 +1023,17 @@ def include_previous_kia_half(
     home_code: str,
     away_code: str,
     team_code: str,
+    last_seq: int,
 ) -> tuple[dict[str, Any], list]:
     available_halves = {(event.inning, event.half) for event in events}
     missing_innings: set[int] = set()
     for event in events:
-        if not event.is_attack_start or half_key(event) in sent_summaries:
+        if not event.is_attack_start:
             continue
         if is_kia_batting(event, home_code, away_code, team_code):
+            if event.event_id <= last_seq:
+                continue
+        elif half_key(event) in sent_summaries:
             continue
         previous_half = (event.inning, "초") if event.half == "말" else (event.inning - 1, "말")
         if previous_half[0] > 0 and previous_half not in available_halves:
@@ -1042,7 +1048,7 @@ def include_previous_kia_half(
             previous_relay = unwrap(client.relay(game_id, inning=inning), "textRelayData")
             combined_groups = list(previous_relay.get("textRelays", [])) + combined_groups
         except Exception:
-            logging.exception("Failed to load inning %s for KIA half summary.", inning)
+            logging.exception("Failed to load inning %s for half-inning notification context.", inning)
 
     enriched_relay = relay.copy()
     enriched_relay["textRelays"] = combined_groups
@@ -1071,6 +1077,7 @@ def dispatch_relay_events(
 
         if event.is_attack_start:
             pitcher_lines = []
+            out_labels = []
             if is_kia_batting(event, home_code, away_code, settings.team_code):
                 side = "home" if event.home_or_away == "1" else "away"
                 pitcher_lines, current_snapshot = changed_pitcher_lines(
@@ -1079,6 +1086,7 @@ def dispatch_relay_events(
                     state.get("lastKiaPitcherSnapshot"),
                 )
                 state["lastKiaPitcherSnapshot"] = current_snapshot
+                out_labels = previous_half_out_labels(all_events, event)
             expected = expected_batters_message(
                 event,
                 relay,
@@ -1088,6 +1096,7 @@ def dispatch_relay_events(
                 home_name,
                 settings.team_code,
                 pitcher_lines,
+                out_labels,
             )
             if expected:
                 telegram.send_message(expected)

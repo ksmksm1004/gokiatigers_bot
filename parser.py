@@ -82,6 +82,19 @@ class RelayEvent:
         return ":" in self.text and not self.text.startswith("투수 ")
 
 
+@dataclass(frozen=True)
+class HalfOutResult:
+    label: str
+    out_numbers: tuple[int, ...]
+    player_code: str | None = None
+    player_name: str | None = None
+
+    @property
+    def tagged_label(self) -> str:
+        numbers = "".join(str(number) for number in self.out_numbers)
+        return f"{self.label}{numbers}"
+
+
 def parse_game_summary(game: dict[str, Any], fallback_game_id: str | None = None) -> GameSummary:
     game_id = str(game.get("gameId") or fallback_game_id or "")
     gdate = str(game.get("gdate") or game.get("gameDate") or "")[:8]
@@ -426,6 +439,7 @@ def expected_batters_message(
     home_name: str,
     team_code: str = KIA_CODE,
     pitcher_lines: list[str] | None = None,
+    previous_out_labels: list[str] | None = None,
 ) -> str:
     if not is_kia_batting(event, home_code, away_code, team_code):
         return ""
@@ -442,9 +456,12 @@ def expected_batters_message(
             break
     expected = [batters[(start_index + offset) % len(batters)] for offset in range(min(3, len(batters)))]
     team_name = batting_team_name(event, home_name, away_name)
+    score = f"{away_name} {event.away_score} : {event.home_score} {home_name}"
+    if previous_out_labels:
+        score += f" ({' '.join(previous_out_labels)})"
     lines = [
         f"KIA 공격 시작 | {event.inning}회{event.half}",
-        f"{away_name} {event.away_score} : {event.home_score} {home_name}",
+        score,
         f"{team_name} 예상 타자",
     ]
     lines.extend(format_batter_snapshot(p) for p in expected)
@@ -623,6 +640,7 @@ def kia_half_summary_message(
 
     side = "home" if half == "말" else "away"
     lineup_by_code = {str(player.get("pcode")): player for player in active_lineup(relay, side)}
+    out_results = half_out_results(events, inning, half)
     used_codes: list[str] = []
     for event in events:
         if event.inning == inning and event.half == half and event.batter_code and event.batter_code not in used_codes:
@@ -637,8 +655,61 @@ def kia_half_summary_message(
     for code in used_codes:
         player = lineup_by_code.get(str(code))
         if player:
-            lines.append(format_batter_summary_stats(player))
+            line = format_batter_summary_stats(player)
+            player_name = str(player.get("name") or "")
+            out_labels = [
+                result.tagged_label
+                for result in out_results
+                if (result.player_code and result.player_code == str(code))
+                or (result.player_name and result.player_name == player_name)
+            ]
+            if out_labels:
+                line += f" | {' '.join(out_labels)}"
+            lines.append(line)
     return "\n".join(line for line in lines if line)
+
+
+def previous_half_out_labels(events: list[RelayEvent], started_by_event: RelayEvent) -> list[str]:
+    previous_half = _previous_half(started_by_event)
+    if previous_half is None:
+        return []
+    inning, half = previous_half
+    return [result.tagged_label for result in half_out_results(events, inning, half)]
+
+
+def half_out_results(events: list[RelayEvent], inning: int, half: str) -> list[HalfOutResult]:
+    results: list[HalfOutResult] = []
+    previous_out = 0
+    half_events = sorted(
+        (event for event in events if event.inning == inning and event.half == half),
+        key=lambda event: event.event_id,
+    )
+
+    for event in half_events:
+        current_out = _relay_out_count(event)
+        if current_out is None:
+            continue
+        if current_out < previous_out:
+            results = [
+                result
+                for result in results
+                if not result.out_numbers or max(result.out_numbers) <= current_out
+            ]
+        elif current_out > previous_out:
+            label = _out_result_label(event)
+            if label:
+                player_code, player_name = _out_result_player(event)
+                results.append(
+                    HalfOutResult(
+                        label=label,
+                        out_numbers=tuple(range(previous_out + 1, current_out + 1)),
+                        player_code=player_code,
+                        player_name=player_name,
+                    )
+                )
+        previous_out = current_out
+
+    return sorted(results, key=lambda result: result.out_numbers[0])
 
 
 def half_key(event: RelayEvent) -> str:
@@ -682,6 +753,47 @@ def _relay_out_count(event: RelayEvent) -> int | None:
     except (TypeError, ValueError):
         return None
     return out_count if 0 <= out_count <= 3 else None
+
+
+def _out_result_label(event: RelayEvent) -> str:
+    text = event.text.split(":", 1)[1].strip() if ":" in event.text else event.text
+    if "병살타" in text:
+        return "병살타"
+    if "삼중살" in text:
+        return "삼중살"
+    if "태그아웃" in text:
+        return "태그"
+    if "포스아웃" in text:
+        return "포스"
+    if "도루" in text and "실패" in text:
+        return "도루실패"
+    if "견제" in text and "아웃" in text:
+        return "견제"
+    if "희생플라이" in text:
+        return "희생플라이"
+    if "희생번트" in text:
+        return "희생번트"
+    if "삼진" in text or "스트라이크 낫 아웃" in text:
+        return "삼진"
+    if "땅볼" in text:
+        return "땅볼"
+    if "플라이" in text or "뜬공" in text:
+        return "플라이"
+    if "직선타" in text:
+        return "직선타"
+    if "주루사" in text:
+        return "주루사"
+    if "아웃" in text:
+        return "아웃"
+    return ""
+
+
+def _out_result_player(event: RelayEvent) -> tuple[str | None, str | None]:
+    runner = re.match(r"(?:[123]루주자|타자주자)\s+(.+?)\s*:", event.text)
+    if runner:
+        return None, runner.group(1).strip()
+    code = str(event.batter_code) if event.batter_code else None
+    return code, event.player_name or _extract_player_name(event.text)
 
 
 def format_batter_snapshot(
