@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
-from naver_api import NaverSportsClient, find_calendar_game_dicts, unwrap
+from naver_api import NaverSportsClient, find_calendar_game_dicts, find_calendar_month_game_dicts, unwrap
 
 
 class CalendarOnlyClient(NaverSportsClient):
@@ -79,6 +79,57 @@ class NaverApiTest(unittest.TestCase):
         )
 
         self.assertEqual(games[0]["gameId"], "20260720HTSK02026")
+
+    def test_find_calendar_month_game_dicts_returns_every_game_in_selected_month(self):
+        games = find_calendar_month_game_dicts(
+            {
+                "result": {
+                    "dates": [
+                        {
+                            "ymd": "2026-07-31",
+                            "gameInfos": [
+                                {
+                                    "gameId": "july",
+                                    "homeTeamCode": "HT",
+                                    "awayTeamCode": "SS",
+                                    "statusCode": "RESULT",
+                                    "winner": "HOME",
+                                }
+                            ],
+                        },
+                        {
+                            "ymd": "2026-08-01",
+                            "gameInfos": [
+                                {
+                                    "gameId": "august-1",
+                                    "homeTeamCode": "HT",
+                                    "awayTeamCode": "SS",
+                                    "statusCode": "RESULT",
+                                    "winner": "HOME",
+                                },
+                                {"gameId": "news", "homeTeamCode": "", "awayTeamCode": ""},
+                            ],
+                        },
+                        {
+                            "ymd": "2026-08-18",
+                            "gameInfos": [
+                                {
+                                    "gameId": "august-18",
+                                    "homeTeamCode": "HH",
+                                    "awayTeamCode": "HT",
+                                    "statusCode": "STARTED",
+                                    "winner": "DRAW",
+                                }
+                            ],
+                        },
+                    ]
+                }
+            },
+            date(2026, 8, 18),
+        )
+
+        self.assertEqual([game["gameId"] for game in games], ["august-1", "august-18"])
+        self.assertEqual(games[0]["winner"], "HOME")
 
 
 if __name__ == "__main__":

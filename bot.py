@@ -20,6 +20,7 @@ from parser import (
     format_game_highlights,
     format_kia_highlight,
     format_kia_news_articles,
+    format_monthly_team_records,
     format_naver_short,
     format_player_record_stats,
     format_kia_record,
@@ -69,6 +70,8 @@ BOT_COMMANDS = [
     ("/record", "오늘 KIA 경기 기록 확인"),
     ("/순위", "KBO 팀 순위 확인"),
     ("/rank", "KBO 팀 순위 확인"),
+    ("/월간성적", "이번 달 KBO 팀 성적 확인"),
+    ("/monthlyrecord", "이번 달 KBO 팀 성적 확인"),
     ("/팀기록", "KBO 팀 주요 기록 확인"),
     ("/teamrecord", "KBO 팀 주요 기록 확인"),
     ("/타자기록", "KBO 타자 주요 기록 확인"),
@@ -90,6 +93,7 @@ TELEGRAM_MENU_COMMANDS = [
     ("/schedule", "KIA 향후 경기 일정 확인"),
     ("/record", "오늘 KIA 경기 기록 확인"),
     ("/rank", "KBO 팀 순위 확인"),
+    ("/monthlyrecord", "이번 달 KBO 팀 성적 확인"),
     ("/teamrecord", "KBO 팀 주요 기록 확인"),
     ("/hitterrecord", "KBO 타자 주요 기록 확인"),
     ("/pitcherrecord", "KBO 투수 주요 기록 확인"),
@@ -614,6 +618,17 @@ def send_team_rankings(
     rankings = unwrap(client.team_rankings(now.year), "seasonTeamStats")
     last_ten = unwrap(client.last_ten_games(now.year), "seasonTeamLastTenGameStats")
     telegram.send_message(format_team_rankings({"seasonTeamStats": rankings}, {"seasonTeamLastTenGameStats": last_ten}))
+
+
+def send_monthly_team_records(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    now: datetime | None = None,
+) -> None:
+    current = now or datetime.now(settings.timezone)
+    games = client.games_in_month(current.date())
+    telegram.send_message(format_monthly_team_records(games, TEAM_NAMES, current.date()))
 
 
 def send_record_options(telegram: TelegramBot, settings: Settings, state: dict[str, Any], record_type: str) -> None:
@@ -1308,6 +1323,8 @@ def handle_telegram_commands(
                 send_team_schedule(client, telegram, settings, datetime.now(settings.timezone))
             elif command in {"/순위", "/rank"}:
                 send_team_rankings(client, telegram, settings)
+            elif command in {"/월간성적", "/monthlyrecord"}:
+                send_monthly_team_records(client, telegram, settings)
             elif command in {"/팀기록", "/teamrecord"}:
                 option = resolve_record_option("team", command_arg)
                 if option:

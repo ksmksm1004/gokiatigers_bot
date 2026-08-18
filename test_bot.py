@@ -24,6 +24,7 @@ from bot import (
     send_due_kia_highlight,
     send_game_end_record_once,
     send_kia_news_command,
+    send_monthly_team_records,
     with_state_plate_totals,
 )
 from config import Settings
@@ -40,6 +41,7 @@ class FakeClient:
         section_news=None,
         relay_by_inning=None,
         game_videos=None,
+        monthly_games=None,
     ):
         self._record = record
         self._relay = relay or {"textRelays": []}
@@ -48,6 +50,8 @@ class FakeClient:
         self._game_news = game_news or []
         self._section_news = section_news or []
         self._game_videos = game_videos or []
+        self._monthly_games = monthly_games or []
+        self.monthly_game_dates = []
         self.record_calls = 0
 
     def record(self, game_id):
@@ -60,6 +64,10 @@ class FakeClient:
 
     def games_on(self, day):
         return self._games
+
+    def games_in_month(self, month):
+        self.monthly_game_dates.append(month)
+        return self._monthly_games
 
     def game_news(self, game_id, page_size=10):
         return {"result": {"newsList": self._game_news}}
@@ -93,6 +101,28 @@ class RecordOptionCallbackTest(unittest.TestCase):
         self.assertEqual(keyboard["inline_keyboard"][0][0]["text"], "타율")
         self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], "rec:hitter:0")
         self.assertEqual(option_from_callback_data("rec:hitter:1"), ("hitter", "홈런"))
+
+
+class MonthlyTeamRecordCommandTest(unittest.TestCase):
+    def test_send_monthly_team_records_uses_current_month_results(self):
+        games = [
+            {
+                "awayTeamCode": "SK",
+                "homeTeamCode": "HT",
+                "statusCode": "RESULT",
+                "winner": "HOME",
+            }
+        ]
+        client = FakeClient(monthly_games=games)
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+        now = datetime(2026, 8, 18, 23, 30, tzinfo=settings.timezone)
+
+        send_monthly_team_records(client, telegram, settings, now)
+
+        self.assertEqual(client.monthly_game_dates, [date(2026, 8, 18)])
+        self.assertIn("2026 KBO 8월 월간 성적", telegram.messages[0])
+        self.assertIn("1. KIA | 1승 0패 0무 | 승률 1.000", telegram.messages[0])
 
 
 class PitchingChangePhotoTest(unittest.TestCase):

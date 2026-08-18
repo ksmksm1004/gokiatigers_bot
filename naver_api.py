@@ -166,6 +166,9 @@ class NaverSportsClient:
             raise last_error
         return []
 
+    def games_in_month(self, month: date) -> list[dict[str, Any]]:
+        return find_calendar_month_game_dicts(self.calendar(month), month)
+
 
 def find_game_dicts(value: Any) -> list[dict[str, Any]]:
     games: list[dict[str, Any]] = []
@@ -188,11 +191,17 @@ def find_game_dicts(value: Any) -> list[dict[str, Any]]:
 
 
 def find_calendar_game_dicts(value: Any, day: date) -> list[dict[str, Any]]:
-    result = value.get("result", value) if isinstance(value, dict) else {}
     selected = day.strftime("%Y-%m-%d")
+    return [game for game in find_calendar_month_game_dicts(value, day) if game.get("gameDate") == selected]
+
+
+def find_calendar_month_game_dicts(value: Any, month: date) -> list[dict[str, Any]]:
+    result = value.get("result", value) if isinstance(value, dict) else {}
+    month_prefix = month.strftime("%Y-%m-")
     games: list[dict[str, Any]] = []
     for date_info in result.get("dates", []):
-        if date_info.get("ymd") != selected:
+        game_date = str(date_info.get("ymd") or "")
+        if not game_date.startswith(month_prefix):
             continue
         for game in date_info.get("gameInfos") or []:
             if not game.get("homeTeamCode") or not game.get("awayTeamCode"):
@@ -204,7 +213,7 @@ def find_calendar_game_dicts(value: Any, day: date) -> list[dict[str, Any]]:
                     "awayTeamCode": game.get("awayTeamCode"),
                     "statusCode": game.get("statusCode"),
                     "winner": game.get("winner"),
-                    "gameDate": selected,
+                    "gameDate": game_date,
                 }
             )
     return games

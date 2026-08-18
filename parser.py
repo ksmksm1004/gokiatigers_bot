@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
+from fractions import Fraction
 from typing import Any
 from urllib.parse import urlencode
 
@@ -979,6 +980,75 @@ def format_team_rankings(rankings: dict[str, Any], last_ten: dict[str, Any]) -> 
             f"{row.get('gameBehind', '-')}G | "
             f"{row.get('continuousGameResult', '-')} | "
             f"{recent_by_team.get(team_id, '-')}"
+        )
+    return "\n".join(lines)
+
+
+def format_monthly_team_records(
+    games: list[dict[str, Any]],
+    team_names: dict[str, str],
+    as_of: date,
+) -> str:
+    records = {
+        code: {"code": code, "name": name, "wins": 0, "losses": 0, "draws": 0}
+        for code, name in team_names.items()
+    }
+    counted_games = 0
+
+    for game in games:
+        status = str(game.get("statusCode") or game.get("gameStatus") or "").upper()
+        if status not in {"RESULT", "END", "ENDED", "FINAL"}:
+            continue
+        away_code = str(game.get("awayTeamCode") or game.get("aCode") or "")
+        home_code = str(game.get("homeTeamCode") or game.get("hCode") or "")
+        if away_code not in records or home_code not in records:
+            continue
+        winner = str(game.get("winner") or "").upper()
+        if winner == "AWAY":
+            records[away_code]["wins"] += 1
+            records[home_code]["losses"] += 1
+        elif winner == "HOME":
+            records[home_code]["wins"] += 1
+            records[away_code]["losses"] += 1
+        elif winner == "DRAW":
+            records[away_code]["draws"] += 1
+            records[home_code]["draws"] += 1
+        else:
+            continue
+        counted_games += 1
+
+    lines = [
+        f"{as_of.year} KBO {as_of.month}월 월간 성적",
+        f"{as_of.month}월 {as_of.day}일 종료 경기 기준",
+    ]
+    if not counted_games:
+        return "\n".join([*lines, "이번 달 종료된 KBO 경기가 없습니다."])
+
+    rows = []
+    for record in records.values():
+        decisions = int(record["wins"]) + int(record["losses"])
+        record["winRate"] = Fraction(int(record["wins"]), decisions) if decisions else Fraction(0, 1)
+        rows.append(record)
+    rows.sort(
+        key=lambda record: (
+            record["winRate"],
+            int(record["wins"]),
+            int(record["draws"]),
+        ),
+        reverse=True,
+    )
+
+    rank = 0
+    previous_rate: Fraction | None = None
+    for index, record in enumerate(rows, start=1):
+        win_rate = record["winRate"]
+        if previous_rate is None or win_rate != previous_rate:
+            rank = index
+            previous_rate = win_rate
+        lines.append(
+            f"{rank}. {record['name']} | "
+            f"{record['wins']}승 {record['losses']}패 {record['draws']}무 | "
+            f"승률 {float(win_rate):.3f}"
         )
     return "\n".join(lines)
 

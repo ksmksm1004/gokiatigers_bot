@@ -1,4 +1,5 @@
 import unittest
+from datetime import date
 
 from parser import (
     RelayEvent,
@@ -7,6 +8,7 @@ from parser import (
     expected_batters_message,
     format_batter_summary_stats,
     format_kia_news_articles,
+    format_monthly_team_records,
     format_player_record_stats,
     format_relay_event,
     format_relay_event_with_context,
@@ -262,6 +264,39 @@ class KiaNewsFormatTest(unittest.TestCase):
         self.assertIn("1. KIA 타선 폭발 (A)", message)
         self.assertIn("https://m.sports.naver.com/kbaseball/article/001/1", message)
         self.assertIn("2. 기아 불펜 점검 (C)", message)
+
+
+class MonthlyTeamRecordTest(unittest.TestCase):
+    def test_monthly_records_count_results_and_use_shared_ranks(self):
+        games = [
+            {"awayTeamCode": "OB", "homeTeamCode": "HT", "statusCode": "RESULT", "winner": "HOME"},
+            {"awayTeamCode": "LT", "homeTeamCode": "HT", "statusCode": "RESULT", "winner": "HOME"},
+            {"awayTeamCode": "HT", "homeTeamCode": "SK", "statusCode": "RESULT", "winner": "HOME"},
+            {"awayTeamCode": "OB", "homeTeamCode": "SK", "statusCode": "RESULT", "winner": "HOME"},
+            {"awayTeamCode": "SK", "homeTeamCode": "LT", "statusCode": "RESULT", "winner": "HOME"},
+            {"awayTeamCode": "LT", "homeTeamCode": "OB", "statusCode": "RESULT", "winner": "HOME"},
+            {"awayTeamCode": "LT", "homeTeamCode": "OB", "statusCode": "RESULT", "winner": "DRAW"},
+            {"awayTeamCode": "SK", "homeTeamCode": "HT", "statusCode": "STARTED", "winner": "HOME"},
+            {"awayTeamCode": "SK", "homeTeamCode": "HT", "statusCode": "CANCEL", "winner": "DRAW"},
+        ]
+        team_names = {"HT": "KIA", "SK": "SSG", "OB": "두산", "LT": "롯데"}
+
+        message = format_monthly_team_records(games, team_names, date(2026, 8, 18))
+
+        self.assertTrue(message.startswith("2026 KBO 8월 월간 성적\n8월 18일 종료 경기 기준"))
+        self.assertIn("1. KIA | 2승 1패 0무 | 승률 0.667", message)
+        self.assertIn("1. SSG | 2승 1패 0무 | 승률 0.667", message)
+        self.assertIn("3. 두산 | 1승 2패 1무 | 승률 0.333", message)
+        self.assertIn("3. 롯데 | 1승 2패 1무 | 승률 0.333", message)
+
+    def test_monthly_records_reports_when_no_game_has_ended(self):
+        games = [
+            {"awayTeamCode": "SK", "homeTeamCode": "HT", "statusCode": "BEFORE", "winner": "DRAW"}
+        ]
+
+        message = format_monthly_team_records(games, {"HT": "KIA", "SK": "SSG"}, date(2026, 3, 1))
+
+        self.assertIn("이번 달 종료된 KBO 경기가 없습니다.", message)
 
 
 class HalfOutSummaryTest(unittest.TestCase):
