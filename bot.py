@@ -52,6 +52,7 @@ from parser import (
     player_photo_url,
     pitcher_photo_url,
     previous_half_out_labels,
+    previous_half_pitcher_lines,
     record_options_message,
     resolve_record_option,
     should_send_relay_event,
@@ -117,6 +118,19 @@ TEAM_NAMES = {
     "KT": "KT",
 }
 
+TEAM_PITCHER_LABELS = {
+    "HT": "KIA",
+    "LT": "롯",
+    "SK": "SSG",
+    "SS": "삼",
+    "LG": "LG",
+    "OB": "두",
+    "HH": "한",
+    "NC": "NC",
+    "WO": "키",
+    "KT": "KT",
+}
+
 TERMINAL_SCHEDULE_STATUS = {"RESULT", "END", "CANCEL", "CANCELED", "CANCELLED"}
 PITCHING_DECISION_POLL_SECONDS = 60
 KIA_HIGHLIGHT_RETRY_MINUTES = 10
@@ -124,6 +138,14 @@ KIA_HIGHLIGHT_MAX_ATTEMPTS = 12
 KIA_SHORTS_LIMIT = 5
 KIA_SHORTS_RETRY_MINUTES = 10
 KIA_SHORTS_MAX_ATTEMPTS = 12
+
+
+def opponent_pitching_context(home_code: str, away_code: str, team_code: str) -> tuple[str, str] | None:
+    if away_code == team_code:
+        return "home", home_code
+    if home_code == team_code:
+        return "away", away_code
+    return None
 
 
 def setup_logging(settings: Settings) -> None:
@@ -1118,6 +1140,17 @@ def dispatch_relay_events(
 
             summary_key = half_key(event)
             if summary_key not in sent_summaries:
+                opponent_pitcher_lines = []
+                context = opponent_pitching_context(home_code, away_code, settings.team_code)
+                if context and is_kia_pitching(event, home_code, away_code, settings.team_code):
+                    pitching_side, opponent_code = context
+                    opponent_pitcher_lines = previous_half_pitcher_lines(
+                        all_events,
+                        relay,
+                        event,
+                        pitching_side,
+                        TEAM_PITCHER_LABELS.get(opponent_code, opponent_code),
+                    )
                 summary = kia_half_summary_message(
                     all_events,
                     relay,
@@ -1127,6 +1160,7 @@ def dispatch_relay_events(
                     away_name,
                     home_name,
                     settings.team_code,
+                    opponent_pitcher_lines,
                 )
                 if summary:
                     telegram.send_message(summary)

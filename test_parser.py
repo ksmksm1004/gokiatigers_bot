@@ -22,6 +22,7 @@ from parser import (
     plate_result_history,
     player_image_url,
     previous_half_out_labels,
+    previous_half_pitcher_lines,
     record_options_message,
     resolve_record_option,
     should_send_relay_event,
@@ -327,6 +328,80 @@ class HalfOutSummaryTest(unittest.TestCase):
 
         self.assertEqual(labels, ["삼진1", "병살타23"])
 
+    def test_previous_half_pitcher_lines_include_every_pitcher_with_team_label(self):
+        events = [
+            RelayEvent(
+                0,
+                7,
+                "초",
+                "7회초 KIA 공격",
+                0,
+                2,
+                current_state={"pitcher": "stale", "out": "0"},
+            ),
+            RelayEvent(1, 7, "초", "김태군 : 볼넷", 0, 2, current_state={"pitcher": "1", "out": "0"}),
+            RelayEvent(2, 7, "초", "투수 화이트 : 투수 김서현 (으)로 교체", 0, 2, current_state={"pitcher": "2", "out": "2"}),
+            RelayEvent(3, 7, "초", "박정우 : 유격수 땅볼 아웃", 0, 2, current_state={"pitcher": "2", "out": "3"}),
+        ]
+        started_by = RelayEvent(4, 7, "말", "7회말 한화 공격", 0, 2, home_or_away="1")
+        relay = {
+            "homeLineup": {
+                "pitcher": [
+                    {
+                        "pcode": "stale",
+                        "name": "이민우",
+                        "seqno": 0,
+                        "ballCount": 8,
+                        "inn": "0.1",
+                        "hit": 2,
+                        "run": 2,
+                        "er": 2,
+                        "bb": 0,
+                        "hbp": 0,
+                        "kk": 0,
+                        "seasonEra": "4.53",
+                    },
+                    {
+                        "pcode": "1",
+                        "name": "화이트",
+                        "seqno": 1,
+                        "ballCount": 103,
+                        "inn": "7.0",
+                        "hit": 5,
+                        "run": 2,
+                        "er": 2,
+                        "bb": 2,
+                        "hbp": 0,
+                        "kk": 6,
+                        "seasonEra": "3.11",
+                    },
+                    {
+                        "pcode": "2",
+                        "name": "김서현",
+                        "seqno": 2,
+                        "ballCount": 4,
+                        "inn": "0.1",
+                        "hit": 0,
+                        "run": 0,
+                        "er": 0,
+                        "bb": 0,
+                        "hbp": 0,
+                        "kk": 1,
+                        "seasonEra": "2.45",
+                    },
+                ]
+            }
+        }
+
+        lines = previous_half_pitcher_lines(events, relay, started_by, "home", "한")
+
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(
+            lines[0],
+            "화이트(한) | 103개 | 7이닝 5피안타 2실점 2자책 2사사구 6삼진 ERA 3.11",
+        )
+        self.assertTrue(lines[1].startswith("김서현(한) | 4개 | 0 ⅓이닝"))
+
     def test_expected_batters_appends_previous_half_outs_to_score(self):
         event = RelayEvent(
             4,
@@ -390,11 +465,13 @@ class HalfOutSummaryTest(unittest.TestCase):
             "KIA",
             "한화",
             "HT",
+            ["화이트(한) | 103개 | 7이닝 5피안타 2실점 2자책 2사사구 6삼진 ERA 3.11"],
         )
 
         self.assertIn("1 박재현 | .286 | 4타수 2안타 1타점 | 태그2", message)
         self.assertIn("2 김선빈 | .271 | 3타수 1볼넷 | 땅볼1", message)
         self.assertIn("4 카스트로 | .350 | 4타수 2안타 | 플라이3", message)
+        self.assertTrue(message.endswith("\n\n화이트(한) | 103개 | 7이닝 5피안타 2실점 2자책 2사사구 6삼진 ERA 3.11"))
 
 
 class CompactBatterFormatTest(unittest.TestCase):

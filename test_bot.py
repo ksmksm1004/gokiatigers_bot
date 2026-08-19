@@ -916,6 +916,94 @@ class TeamScheduleTest(unittest.TestCase):
 
 
 class KiaHalfSummaryTest(unittest.TestCase):
+    def test_away_kia_half_summary_includes_opponent_pitcher_stats(self):
+        events = [
+            RelayEvent(
+                1,
+                7,
+                "초",
+                "김태군 : 중견수 플라이 아웃",
+                0,
+                2,
+                batter_code="8",
+                player_name="김태군",
+                home_or_away="0",
+                current_state={"pitcher": "56724", "out": "1"},
+            ),
+            RelayEvent(
+                2,
+                7,
+                "초",
+                "박정우 : 유격수 땅볼 아웃",
+                0,
+                2,
+                batter_code="2",
+                player_name="박정우",
+                home_or_away="0",
+                current_state={"pitcher": "56724", "out": "3"},
+            ),
+            RelayEvent(
+                3,
+                7,
+                "말",
+                "7회말 한화 공격",
+                0,
+                2,
+                home_or_away="1",
+                current_state={"out": "0"},
+            ),
+        ]
+        relay = {
+            "awayLineup": {
+                "batter": [
+                    {"pcode": "8", "name": "김태군", "batOrder": 8, "seasonHra": "0.279", "ab": 2, "bb": 1},
+                    {"pcode": "2", "name": "박정우", "batOrder": 2, "seasonHra": "0.300", "ab": 4, "hit": 1, "so": 1},
+                ]
+            },
+            "homeLineup": {
+                "pitcher": [
+                    {
+                        "pcode": "56724",
+                        "name": "화이트",
+                        "seqno": 1,
+                        "ballCount": 103,
+                        "inn": "7.0",
+                        "hit": 5,
+                        "run": 2,
+                        "er": 2,
+                        "bb": 2,
+                        "hbp": 0,
+                        "kk": 6,
+                        "seasonEra": "3.11",
+                    }
+                ]
+            },
+        }
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+
+        dispatch_relay_events(
+            telegram,
+            settings,
+            {},
+            relay,
+            events,
+            [events[-1]],
+            set(),
+            "KIA",
+            "한화",
+            "HT",
+            "HH",
+        )
+
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertIn("KIA 공격 종료 | 7회초", telegram.messages[0])
+        self.assertTrue(
+            telegram.messages[0].endswith(
+                "\n\n화이트(한) | 103개 | 7이닝 5피안타 2실점 2자책 2사사구 6삼진 ERA 3.11"
+            )
+        )
+
     def test_process_relay_loads_previous_inning_for_away_kia_out_summary(self):
         current_relay = {
             "awayLineup": {

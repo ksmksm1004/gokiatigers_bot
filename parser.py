@@ -499,12 +499,13 @@ def changed_pitcher_lines(
     relay: dict[str, Any],
     side: str,
     previous_snapshot: dict[str, dict[str, Any]] | None,
+    team_label: str | None = None,
 ) -> tuple[list[str], dict[str, dict[str, Any]]]:
     current = pitcher_snapshot(relay, side)
     if not previous_snapshot:
         active = [pitcher for pitcher in current.values() if _pitcher_has_game_activity(pitcher)]
         active.sort(key=lambda pitcher: _to_int(pitcher.get("seqno")))
-        return ([format_pitcher_snapshot(active[-1])] if active else []), current
+        return ([format_pitcher_snapshot(active[-1], team_label)] if active else []), current
 
     changed = []
     for code, pitcher in current.items():
@@ -512,7 +513,7 @@ def changed_pitcher_lines(
         if _pitcher_changed_since_snapshot(previous, pitcher):
             changed.append(pitcher)
     changed.sort(key=lambda pitcher: _to_int(pitcher.get("seqno")))
-    return [format_pitcher_snapshot(pitcher) for pitcher in changed], current
+    return [format_pitcher_snapshot(pitcher, team_label) for pitcher in changed], current
 
 
 def _pitcher_changed_since_snapshot(previous: dict[str, Any], current: dict[str, Any]) -> bool:
@@ -527,8 +528,11 @@ def _pitcher_has_game_activity(pitcher: dict[str, Any]) -> bool:
     return innings not in {"", "0", "0.0", "0 0/3"}
 
 
-def format_pitcher_snapshot(pitcher: dict[str, Any]) -> str:
+def format_pitcher_snapshot(pitcher: dict[str, Any], team_label: str | None = None) -> str:
     walk = _to_int(pitcher.get("bb")) + _to_int(pitcher.get("hbp"))
+    name = str(pitcher.get("name") or "-")
+    if team_label:
+        name += f"({team_label})"
     fields = [
         f"{_format_innings(pitcher.get('inn'))}이닝",
         f"{_to_int(pitcher.get('hit'))}피안타",
@@ -538,7 +542,7 @@ def format_pitcher_snapshot(pitcher: dict[str, Any]) -> str:
         f"{_to_int(pitcher.get('kk'))}삼진",
         f"ERA {pitcher.get('seasonEra', '-')}",
     ]
-    return f"{pitcher.get('name', '-')} | {_to_int(pitcher.get('ballCount'))}개 | " + " ".join(fields)
+    return f"{name} | {_to_int(pitcher.get('ballCount'))}개 | " + " ".join(fields)
 
 
 def find_previous_plate_event(events: list[RelayEvent], event: RelayEvent) -> RelayEvent | None:
@@ -622,6 +626,7 @@ def kia_half_summary_message(
     away_name: str,
     home_name: str,
     team_code: str = KIA_CODE,
+    pitcher_lines: list[str] | None = None,
 ) -> str:
     previous_half = _previous_half(finished_by_event)
     if previous_half is None:
@@ -667,7 +672,9 @@ def kia_half_summary_message(
             if out_labels:
                 line += f" | {' '.join(out_labels)}"
             lines.append(line)
-    return "\n".join(line for line in lines if line)
+    if pitcher_lines:
+        lines += ["", *pitcher_lines]
+    return "\n".join(lines)
 
 
 def previous_half_out_labels(events: list[RelayEvent], started_by_event: RelayEvent) -> list[str]:
@@ -676,6 +683,39 @@ def previous_half_out_labels(events: list[RelayEvent], started_by_event: RelayEv
         return []
     inning, half = previous_half
     return [result.tagged_label for result in half_out_results(events, inning, half)]
+
+
+def previous_half_pitcher_lines(
+    events: list[RelayEvent],
+    relay: dict[str, Any],
+    started_by_event: RelayEvent,
+    pitching_side: str,
+    team_label: str | None = None,
+) -> list[str]:
+    previous_half = _previous_half(started_by_event)
+    if previous_half is None:
+        return []
+    inning, half = previous_half
+    pitcher_codes: list[str] = []
+    for event in sorted(events, key=lambda item: item.event_id):
+        if event.inning != inning or event.half != half:
+            continue
+        if event.is_attack_start:
+            continue
+        code = str((event.current_state or {}).get("pitcher") or "")
+        if code and code not in pitcher_codes:
+            pitcher_codes.append(code)
+
+    snapshot = pitcher_snapshot(relay, pitching_side)
+    lines = [
+        format_pitcher_snapshot(snapshot[code], team_label)
+        for code in pitcher_codes
+        if code in snapshot
+    ]
+    if lines:
+        return lines
+    fallback, _ = changed_pitcher_lines(relay, pitching_side, None, team_label)
+    return fallback
 
 
 def half_out_results(events: list[RelayEvent], inning: int, half: str) -> list[HalfOutResult]:
