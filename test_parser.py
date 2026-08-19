@@ -242,6 +242,7 @@ class RecordStatsFormatTest(unittest.TestCase):
 
     def test_record_option_prompt_and_resolution(self):
         self.assertIn("1. 타율", record_options_message("team"))
+        self.assertIn("개인 기록: /타자기록 선수명", record_options_message("hitter"))
         self.assertEqual(resolve_record_option("team", "타율 알려줘"), "타율")
         self.assertEqual(resolve_record_option("hitter", "ops"), "OPS")
 

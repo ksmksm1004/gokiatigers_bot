@@ -10,7 +10,10 @@ from bot import (
     final_score_from_record,
     finish_stopped_relay_game_if_done,
     format_team_schedule,
+    handle_telegram_commands,
     option_from_callback_data,
+    player_from_callback_data,
+    player_selection_keyboard,
     process_relay,
     record_options_keyboard,
     remember_plate_result,
@@ -25,9 +28,11 @@ from bot import (
     send_game_end_record_once,
     send_kia_news_command,
     send_monthly_team_records,
+    send_player_record_lookup,
     with_state_plate_totals,
 )
 from config import Settings
+from kbo_api import KBOPlayerCandidate, KBOPlayerRecord
 from parser import RelayEvent
 
 
@@ -94,6 +99,19 @@ class FakeTelegram:
         self.messages.append(caption)
 
 
+class FakeCommandTelegram(FakeTelegram):
+    def __init__(self, updates):
+        super().__init__()
+        self.updates = updates
+        self.answered_callbacks = []
+
+    def get_updates(self, offset=None):
+        return self.updates
+
+    def answer_callback_query(self, callback_query_id):
+        self.answered_callbacks.append(callback_query_id)
+
+
 class RecordOptionCallbackTest(unittest.TestCase):
     def test_record_options_keyboard_uses_short_callback_data(self):
         keyboard = record_options_keyboard("hitter")
@@ -101,6 +119,166 @@ class RecordOptionCallbackTest(unittest.TestCase):
         self.assertEqual(keyboard["inline_keyboard"][0][0]["text"], "타율")
         self.assertEqual(keyboard["inline_keyboard"][0][0]["callback_data"], "rec:hitter:0")
         self.assertEqual(option_from_callback_data("rec:hitter:1"), ("hitter", "홈런"))
+
+    def test_player_callback_data_identifies_record_type_and_player(self):
+        self.assertEqual(player_from_callback_data("player:h:52605"), ("hitter", "52605"))
+        self.assertEqual(player_from_callback_data("player:p:77637"), ("pitcher", "77637"))
+        self.assertIsNone(player_from_callback_data("player:h:not-a-number"))
+
+
+class FakeKBOPlayerClient:
+    def __init__(self, candidates, record=None):
+        self.candidates = candidates
+        self.record = record
+        self.search_calls = []
+        self.record_calls = []
+
+    def search_players(self, name, record_type):
+        self.search_calls.append((name, record_type))
+        return self.candidates
+
+    def player_record(self, player_id, record_type):
+        self.record_calls.append((player_id, record_type))
+        return self.record
+
+
+class PersonalPlayerRecordTest(unittest.TestCase):
+    def test_unique_player_sends_photo_with_basic_record(self):
+        candidate = KBOPlayerCandidate("52605", "김도영", "KIA", "내야수", "5", "우투우타", "hitter")
+        record = KBOPlayerRecord(
+            player_id="52605",
+            record_type="hitter",
+            season="2026",
+            team="KIA 타이거즈",
+            name="김도영",
+            birthday="2003년 10월 02일",
+            height_weight="183cm/85kg",
+            salary="25000만원",
+            back_number="5",
+            position="내야수(우투우타)",
+            photo_url="https://images.example/52605.jpg",
+            stats={
+                "AVG": "0.298",
+                "AB": "400",
+                "H": "119",
+                "2B": "21",
+                "3B": "1",
+                "HR": "37",
+                "RBI": "93",
+                "R": "89",
+                "SB": "8",
+                "BB": "62",
+                "HBP": "5",
+                "SO": "81",
+                "OBP": "0.395",
+                "SLG": "0.633",
+                "OPS": "1.028",
+            },
+        )
+        client = FakeKBOPlayerClient([candidate], record)
+        telegram = FakeTelegram()
+
+        send_player_record_lookup(telegram, "hitter", "김도영", client)
+
+        self.assertEqual(client.search_calls, [("김도영", "hitter")])
+        self.assertEqual(client.record_calls, [("52605", "hitter")])
+        self.assertEqual(telegram.photos[0][0], "https://images.example/52605.jpg")
+        self.assertIn("타율 .298 | 타수 400 | 안타 119", telegram.photos[0][1])
+
+    def test_duplicate_players_send_selection_keyboard(self):
+        candidates = [
+            KBOPlayerCandidate("10001", "김민수", "KT", "투수", "26", "우투우타", "pitcher"),
+            KBOPlayerCandidate("10002", "김민수", "삼성", "투수", "57", "우투우타", "pitcher"),
+        ]
+        client = FakeKBOPlayerClient(candidates)
+        telegram = FakeTelegram()
+
+        send_player_record_lookup(telegram, "pitcher", "김민수", client)
+
+        self.assertEqual(client.record_calls, [])
+        self.assertIn("동명이인이 있습니다", telegram.messages[0])
+        self.assertEqual(
+            telegram.reply_markups[0],
+            player_selection_keyboard(candidates),
+        )
+        self.assertEqual(
+            telegram.reply_markups[0]["inline_keyboard"][1][0]["callback_data"],
+            "player:p:10002",
+        )
+
+    def test_unknown_player_returns_clear_message(self):
+        telegram = FakeTelegram()
+
+        send_player_record_lookup(telegram, "hitter", "없는선수", FakeKBOPlayerClient([]))
+
+        self.assertEqual(
+            telegram.messages,
+            ["현재 등록된 KBO 타자 중 '없는선수' 선수를 찾지 못했습니다."],
+        )
+
+    def test_hitter_command_with_name_routes_to_personal_record(self):
+        candidate = KBOPlayerCandidate("52605", "김도영", "KIA", "내야수", "5", "우투우타", "hitter")
+        record = KBOPlayerRecord(
+            player_id="52605",
+            record_type="hitter",
+            season="2026",
+            team="KIA 타이거즈",
+            name="김도영",
+            photo_url="https://images.example/52605.jpg",
+        )
+        kbo_client = FakeKBOPlayerClient([candidate], record)
+        telegram = FakeCommandTelegram(
+            [{"update_id": 10, "message": {"chat": {"id": "chat"}, "text": "/타자기록 김도영"}}]
+        )
+
+        with TemporaryDirectory() as directory, patch("bot.KBOPlayerClient", return_value=kbo_client):
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="chat",
+                dry_run=True,
+                state_path=Path(directory) / "state.json",
+            )
+            handle_telegram_commands(FakeClient(), object(), telegram, settings, {"telegramUpdateOffset": 10}, None)
+
+        self.assertEqual(kbo_client.search_calls, [("김도영", "hitter")])
+        self.assertEqual(kbo_client.record_calls, [("52605", "hitter")])
+        self.assertEqual(telegram.photos[0][0], "https://images.example/52605.jpg")
+
+    def test_player_selection_callback_loads_selected_pitcher(self):
+        record = KBOPlayerRecord(
+            player_id="77637",
+            record_type="pitcher",
+            season="2026",
+            team="KIA 타이거즈",
+            name="양현종",
+            photo_url="https://images.example/77637.jpg",
+        )
+        kbo_client = FakeKBOPlayerClient([], record)
+        telegram = FakeCommandTelegram(
+            [
+                {
+                    "update_id": 11,
+                    "callback_query": {
+                        "id": "callback-1",
+                        "data": "player:p:77637",
+                        "message": {"chat": {"id": "chat"}},
+                    },
+                }
+            ]
+        )
+
+        with TemporaryDirectory() as directory, patch("bot.KBOPlayerClient", return_value=kbo_client):
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="chat",
+                dry_run=True,
+                state_path=Path(directory) / "state.json",
+            )
+            handle_telegram_commands(FakeClient(), object(), telegram, settings, {"telegramUpdateOffset": 11}, None)
+
+        self.assertEqual(telegram.answered_callbacks, ["callback-1"])
+        self.assertEqual(kbo_client.record_calls, [("77637", "pitcher")])
+        self.assertEqual(telegram.photos[0][0], "https://images.example/77637.jpg")
 
 
 class MonthlyTeamRecordCommandTest(unittest.TestCase):

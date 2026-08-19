@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from config import Settings, get_settings
+from kbo_api import KBOPlayerCandidate, KBOPlayerClient, format_player_record
 from naver_api import NaverSportsClient, unwrap
 from naver_weather import NaverWeatherClient
 from parser import (
@@ -75,10 +76,10 @@ BOT_COMMANDS = [
     ("/monthlyrecord", "이번 달 KBO 팀 성적 확인"),
     ("/팀기록", "KBO 팀 주요 기록 확인"),
     ("/teamrecord", "KBO 팀 주요 기록 확인"),
-    ("/타자기록", "KBO 타자 주요 기록 확인"),
-    ("/hitterrecord", "KBO 타자 주요 기록 확인"),
-    ("/투수기록", "KBO 투수 주요 기록 확인"),
-    ("/pitcherrecord", "KBO 투수 주요 기록 확인"),
+    ("/타자기록", "KBO 타자 TOP 10·개인 기록 확인"),
+    ("/hitterrecord", "KBO 타자 TOP 10·개인 기록 확인"),
+    ("/투수기록", "KBO 투수 TOP 10·개인 기록 확인"),
+    ("/pitcherrecord", "KBO 투수 TOP 10·개인 기록 확인"),
     ("/뉴스", "KIA 주요 기사 확인"),
     ("/news", "KIA 주요 기사 확인"),
     ("/날씨", "오늘 KIA 경기 구장 날씨 확인"),
@@ -96,8 +97,8 @@ TELEGRAM_MENU_COMMANDS = [
     ("/rank", "KBO 팀 순위 확인"),
     ("/monthlyrecord", "이번 달 KBO 팀 성적 확인"),
     ("/teamrecord", "KBO 팀 주요 기록 확인"),
-    ("/hitterrecord", "KBO 타자 주요 기록 확인"),
-    ("/pitcherrecord", "KBO 투수 주요 기록 확인"),
+    ("/hitterrecord", "KBO 타자 TOP 10·개인 기록"),
+    ("/pitcherrecord", "KBO 투수 TOP 10·개인 기록"),
     ("/news", "KIA 주요 기사 확인"),
     ("/weather", "오늘 KIA 경기 구장 날씨"),
     ("/gg", "오늘 경기 중계 중단"),
@@ -691,6 +692,69 @@ def option_from_callback_data(data: str) -> tuple[str, str] | None:
     if option_index < 0 or option_index >= len(labels):
         return None
     return record_type, labels[option_index]
+
+
+def player_from_callback_data(data: str) -> tuple[str, str] | None:
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != "player":
+        return None
+    record_type = {"h": "hitter", "p": "pitcher"}.get(parts[1])
+    player_id = parts[2]
+    if not record_type or not player_id.isdigit():
+        return None
+    return record_type, player_id
+
+
+def player_selection_keyboard(candidates: list[KBOPlayerCandidate]) -> dict[str, Any]:
+    short_types = {"hitter": "h", "pitcher": "p"}
+    rows = []
+    for player in candidates:
+        label = f"{player.name} | {player.team} | {player.position} | {player.back_number}번"
+        rows.append(
+            [
+                {
+                    "text": label,
+                    "callback_data": f"player:{short_types[player.record_type]}:{player.player_id}",
+                }
+            ]
+        )
+    return {"inline_keyboard": rows}
+
+
+def send_player_record(
+    client: KBOPlayerClient,
+    telegram: TelegramBot,
+    record_type: str,
+    player_id: str,
+) -> None:
+    record = client.player_record(player_id, record_type)
+    photo_url = record.photo_url or player_image_url(record.player_id)
+    telegram.send_photo(photo_url, format_player_record(record))
+
+
+def send_player_record_lookup(
+    telegram: TelegramBot,
+    record_type: str,
+    player_name: str,
+    client: KBOPlayerClient | None = None,
+) -> None:
+    player_client = client or KBOPlayerClient()
+    candidates = player_client.search_players(player_name, record_type)
+    record_label = "타자" if record_type == "hitter" else "투수"
+    if not candidates:
+        telegram.send_message(f"현재 등록된 KBO {record_label} 중 '{player_name}' 선수를 찾지 못했습니다.")
+        return
+    if len(candidates) == 1:
+        send_player_record(player_client, telegram, record_type, candidates[0].player_id)
+        return
+
+    lines = [f"동명이인이 있습니다. 확인할 {record_label}를 선택해주세요."]
+    for index, player in enumerate(candidates, 1):
+        lines.append(
+            f"{index}. {player.name} | {player.team} | {player.position} | "
+            f"{player.back_number}번 | {player.bats_throws}"
+        )
+    telegram.send_message("\n".join(lines), reply_markup=player_selection_keyboard(candidates))
 
 
 def send_selected_record_stats(
@@ -1307,8 +1371,17 @@ def handle_telegram_commands(
                     state.pop("pendingRecordCommand", None)
                     telegram.answer_callback_query(str(callback.get("id") or ""))
                     send_selected_record_stats(client, telegram, settings, record_type, option)
-                else:
+                    continue
+
+                selected_player = player_from_callback_data(data)
+                if selected_player:
+                    record_type, player_id = selected_player
+                    state.pop("pendingRecordCommand", None)
                     telegram.answer_callback_query(str(callback.get("id") or ""))
+                    send_player_record(KBOPlayerClient(), telegram, record_type, player_id)
+                    continue
+
+                telegram.answer_callback_query(str(callback.get("id") or ""))
                 continue
             except Exception:
                 logging.exception("Telegram callback failed: %s", callback.get("data"))
@@ -1372,12 +1445,20 @@ def handle_telegram_commands(
                     state.pop("pendingRecordCommand", None)
                     send_selected_record_stats(client, telegram, settings, "hitter", option)
                     continue
+                if command_arg:
+                    state.pop("pendingRecordCommand", None)
+                    send_player_record_lookup(telegram, "hitter", command_arg)
+                    continue
                 send_record_options(telegram, settings, state, "hitter")
             elif command in {"/투수기록", "/pitcherrecord"}:
                 option = resolve_record_option("pitcher", command_arg)
                 if option:
                     state.pop("pendingRecordCommand", None)
                     send_selected_record_stats(client, telegram, settings, "pitcher", option)
+                    continue
+                if command_arg:
+                    state.pop("pendingRecordCommand", None)
+                    send_player_record_lookup(telegram, "pitcher", command_arg)
                     continue
                 send_record_options(telegram, settings, state, "pitcher")
             elif command in {"/뉴스", "/news"}:

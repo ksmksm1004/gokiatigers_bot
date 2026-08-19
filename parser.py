@@ -1139,6 +1139,8 @@ def record_options_message(record_type: str) -> str:
     title = {"team": "팀기록", "hitter": "타자기록", "pitcher": "투수기록"}.get(record_type, "기록")
     lines = [f"{title} 중 알고 싶은게 있으세요?"]
     lines.extend(f"{idx}. {label}" for idx, label in enumerate(labels, 1))
+    if record_type in {"hitter", "pitcher"}:
+        lines += ["", f"개인 기록: /{title} 선수명"]
     return "\n".join(lines)
 
 
