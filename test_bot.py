@@ -22,6 +22,8 @@ from bot import (
     resolve_cancellation_reason,
     resume_relay_for_game,
     schedule_kia_highlight_after_rankings,
+    send_lineup,
+    send_lineup_once,
     send_daily_rankings_if_all_games_done,
     send_due_kia_shorts,
     send_due_kia_news,
@@ -48,6 +50,7 @@ class FakeClient:
         relay_by_inning=None,
         game_videos=None,
         monthly_games=None,
+        preview=None,
     ):
         self._record = record
         self._relay = relay or {"textRelays": []}
@@ -57,12 +60,16 @@ class FakeClient:
         self._section_news = section_news or []
         self._game_videos = game_videos or []
         self._monthly_games = monthly_games or []
+        self._preview = preview or {}
         self.monthly_game_dates = []
         self.record_calls = 0
 
     def record(self, game_id):
         self.record_calls += 1
         return {"result": {"recordData": self._record}}
+
+    def preview(self, game_id):
+        return {"result": {"previewData": self._preview}}
 
     def relay(self, game_id, inning=None):
         relay = self._relay_by_inning.get(inning, self._relay)
@@ -90,6 +97,9 @@ class FakeTelegram:
         self.messages = []
         self.photos = []
         self.reply_markups = []
+        self.media_groups = []
+        self.photo_files = []
+        self.calls = []
 
     def send_message(self, text, reply_markup=None):
         self.messages.append(text)
@@ -98,6 +108,14 @@ class FakeTelegram:
     def send_photo(self, photo_url, caption):
         self.photos.append((photo_url, caption))
         self.messages.append(caption)
+
+    def send_media_group(self, items):
+        self.media_groups.append(items)
+        self.calls.append("media_group")
+
+    def send_photo_bytes(self, photo, caption, filename="photo.png"):
+        self.photo_files.append((photo, caption, filename))
+        self.calls.append("photo_bytes")
 
 
 class FakeCommandTelegram(FakeTelegram):
@@ -111,6 +129,87 @@ class FakeCommandTelegram(FakeTelegram):
 
     def answer_callback_query(self, callback_query_id):
         self.answered_callbacks.append(callback_query_id)
+
+
+class LineupDefenseDeliveryTest(unittest.TestCase):
+    @staticmethod
+    def lineup(prefix):
+        positions = [
+            (None, "1", "선발투수"),
+            (1, "7", "좌익수"),
+            (2, "4", "2루수"),
+            (3, "0", "지명타자"),
+            (4, "3", "1루수"),
+            (5, "9", "우익수"),
+            (6, "5", "3루수"),
+            (7, "2", "포수"),
+            (8, "6", "유격수"),
+            (9, "8", "중견수"),
+        ]
+        return [
+            {
+                "playerCode": f"{prefix}-{position}",
+                "playerName": f"{prefix} 선수 {position}",
+                "batorder": order,
+                "position": position,
+                "positionName": position_name,
+            }
+            for order, position, position_name in positions
+        ]
+
+    @classmethod
+    def preview(cls):
+        return {
+            "gameInfo": {
+                "aCode": "HT",
+                "aName": "KIA",
+                "hCode": "HH",
+                "hName": "한화",
+                "gdate": 20260820,
+            },
+            "awayTeamLineUp": {"fullLineUp": cls.lineup("KIA")},
+            "homeTeamLineUp": {"fullLineUp": cls.lineup("한화")},
+        }
+
+    @patch("bot.time.sleep")
+    @patch("bot.render_defensive_lineup_image", return_value=b"defense-png")
+    def test_lineup_command_sends_both_face_groups_then_kia_defense(self, render_image, _sleep):
+        telegram = FakeTelegram()
+
+        send_lineup(FakeClient(preview=self.preview()), telegram, "game1")
+
+        self.assertEqual(len(telegram.media_groups), 2)
+        self.assertEqual(telegram.calls, ["media_group", "media_group", "photo_bytes"])
+        self.assertEqual(
+            telegram.photo_files,
+            [(b"defense-png", "KIA 선발 수비", "kia-defense-20260820.png")],
+        )
+        render_image.assert_called_once()
+        self.assertEqual(render_image.call_args.args[1], "away")
+
+    @patch("bot.render_defensive_lineup_image", return_value=b"defense-png")
+    def test_automatic_lineup_sends_defense_once_and_persists_state(self, render_image):
+        telegram = FakeTelegram()
+        state = {}
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+            )
+            client = FakeClient(preview=self.preview())
+
+            send_lineup_once(client, telegram, settings, state, "game1")
+            send_lineup_once(client, telegram, settings, state, "game1")
+
+        self.assertEqual(len(telegram.media_groups), 2)
+        self.assertEqual(len(telegram.photo_files), 1)
+        self.assertEqual(render_image.call_count, 1)
+        self.assertEqual(state["lineupAwaySentGameId"], "game1")
+        self.assertEqual(state["lineupHomeSentGameId"], "game1")
+        self.assertEqual(state["lineupDefenseSentGameId"], "game1")
+        self.assertEqual(state["lineupSentGameId"], "game1")
 
 
 class RecordOptionCallbackTest(unittest.TestCase):

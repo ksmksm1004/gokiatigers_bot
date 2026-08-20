@@ -27,6 +27,21 @@ class TelegramBotTest(unittest.TestCase):
         with self.assertRaises(requests.HTTPError):
             bot.get_updates()
 
+    def test_send_photo_bytes_uses_multipart_upload(self):
+        bot = TelegramBot("token", "chat")
+        response = Mock(status_code=200)
+        bot.session = Mock()
+        bot.session.post.return_value = response
+
+        bot.send_photo_bytes(b"png-data", "KIA 선발 수비", "kia-defense.png")
+
+        url = bot.session.post.call_args.args[0]
+        kwargs = bot.session.post.call_args.kwargs
+        self.assertEqual(url, "https://api.telegram.org/bottoken/sendPhoto")
+        self.assertEqual(kwargs["data"], {"chat_id": "chat", "caption": "KIA 선발 수비"})
+        self.assertEqual(kwargs["files"]["photo"], ("kia-defense.png", b"png-data", "image/png"))
+        response.raise_for_status.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

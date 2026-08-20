@@ -10,6 +10,7 @@ from typing import Any
 
 from config import Settings, get_settings
 from kbo_api import KBOPlayerCandidate, KBOPlayerClient, format_player_record
+from lineup_image import render_defensive_lineup_image
 from naver_api import NaverSportsClient, unwrap
 from naver_weather import NaverWeatherClient
 from parser import (
@@ -559,6 +560,7 @@ def send_lineup_once(
         state.get("lineupSentGameId") == game_id
         and state.get("lineupAwaySentGameId") == game_id
         and state.get("lineupHomeSentGameId") == game_id
+        and state.get("lineupDefenseSentGameId") == game_id
     ):
         return
     if state.get("lineupSentGameId") == game_id:
@@ -571,6 +573,7 @@ def send_lineup_once(
     info = preview.get("gameInfo", {})
     away_name = info.get("aName", "원정")
     home_name = info.get("hName", "홈")
+    kia_side = lineup_side_for_team(preview, settings.team_code)
 
     if state.get("lineupHeaderSentGameId") != game_id:
         state["lineupHeaderSentGameId"] = game_id
@@ -593,7 +596,19 @@ def send_lineup_once(
         except Exception:
             logging.exception("Failed to send %s lineup for %s. It will not be retried automatically.", label, game_id)
 
-    if state.get("lineupAwaySentGameId") == game_id and state.get("lineupHomeSentGameId") == game_id:
+    if kia_side and state.get("lineupDefenseSentGameId") != game_id:
+        try:
+            if send_defensive_lineup_image(telegram, preview, kia_side):
+                state["lineupDefenseSentGameId"] = game_id
+                save_state(settings.state_path, state)
+        except Exception:
+            logging.exception("Failed to send KIA defensive lineup for %s.", game_id)
+
+    if (
+        state.get("lineupAwaySentGameId") == game_id
+        and state.get("lineupHomeSentGameId") == game_id
+        and (not kia_side or state.get("lineupDefenseSentGameId") == game_id)
+    ):
         state["lineupSentGameId"] = game_id
     save_state(settings.state_path, state)
 
@@ -617,6 +632,37 @@ def send_lineup(
         if items:
             telegram.send_media_group(items)
             time.sleep(3)
+    kia_side = lineup_side_for_team(preview)
+    if kia_side:
+        send_defensive_lineup_image(telegram, preview, kia_side)
+
+
+def lineup_side_for_team(preview: dict[str, Any], team_code: str = "HT") -> str | None:
+    info = preview.get("gameInfo") or {}
+    if str(info.get("aCode") or info.get("awayTeamCode") or "") == team_code:
+        return "away"
+    if str(info.get("hCode") or info.get("homeTeamCode") or "") == team_code:
+        return "home"
+    if team_code == "HT":
+        if str(info.get("aName") or "") == "KIA":
+            return "away"
+        if str(info.get("hName") or "") == "KIA":
+            return "home"
+    return None
+
+
+def send_defensive_lineup_image(
+    telegram: TelegramBot,
+    preview: dict[str, Any],
+    side: str,
+) -> bool:
+    image = render_defensive_lineup_image(preview, side)
+    if not image:
+        return False
+    game_date = re.sub(r"\D", "", str((preview.get("gameInfo") or {}).get("gdate") or ""))
+    filename = f"kia-defense-{game_date or 'lineup'}.png"
+    telegram.send_photo_bytes(image, "KIA 선발 수비", filename)
+    return True
 
 
 def send_kia_record(

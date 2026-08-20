@@ -40,6 +40,13 @@ class TelegramBot:
             return
         self._post("sendPhoto", {"chat_id": self.chat_id, "photo": photo_url, "caption": caption})
 
+    def send_photo_bytes(self, photo: bytes, caption: str, filename: str = "photo.png") -> None:
+        if self.dry_run:
+            logging.info("[DRY_RUN] Telegram photo file %s (%s bytes):\n%s", filename, len(photo), caption)
+            print(f"{filename} ({len(photo)} bytes)\n{caption}")
+            return
+        self._post_photo_bytes(photo, caption, filename)
+
     def send_media_group(self, items: list[tuple[str, str]]) -> None:
         if not items:
             return
@@ -102,4 +109,27 @@ class TelegramBot:
             logging.warning("Telegram rate limited on %s. Retrying after %ss.", method, retry_after)
             time.sleep(min(retry_after + 1, 65))
             response = self.session.post(f"{self.base_url}/{method}", json=payload, timeout=10)
+        response.raise_for_status()
+
+    def _post_photo_bytes(self, photo: bytes, caption: str, filename: str) -> None:
+        payload = {"chat_id": self.chat_id, "caption": caption}
+
+        def post_photo():
+            return self.session.post(
+                f"{self.base_url}/sendPhoto",
+                data=payload,
+                files={"photo": (filename, photo, "image/png")},
+                timeout=20,
+            )
+
+        response = post_photo()
+        if response.status_code == 429:
+            retry_after = 3
+            try:
+                retry_after = int(response.json().get("parameters", {}).get("retry_after", retry_after))
+            except (TypeError, ValueError):
+                retry_after = 3
+            logging.warning("Telegram rate limited on sendPhoto. Retrying after %ss.", retry_after)
+            time.sleep(min(retry_after + 1, 65))
+            response = post_photo()
         response.raise_for_status()

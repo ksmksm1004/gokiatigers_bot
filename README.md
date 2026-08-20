@@ -7,7 +7,7 @@ KIA 타이거즈 경기를 감시해 경기 전 정보, 실시간 중계, 경기
 ## 주요 기능
 
 - 당일 KIA 경기 자동 탐색 및 경기 상태 추적
-- 경기 프리뷰, 양 팀 선발 라인업과 선수 사진 발송
+- 경기 프리뷰, 양 팀 선발 라인업과 선수 사진 및 KIA 선발 수비 배치도 발송
 - KIA 공격 시작·종료 및 주요 플레이 실시간 알림
 - 타자·투수 사진, 누적 타격 기록, 아웃 카운트 표시
 - 경기 종료 스코어, 하이라이트 타자, KIA 박스스코어 발송
@@ -35,6 +35,7 @@ KIA 타이거즈 경기를 감시해 경기 전 정보, 실시간 중계, 경기
 2. **선발 라인업**
    - 양 팀 선발투수와 1~9번 타자
    - 선수 사진, 타순, 포지션, 투타 정보
+   - KIA 선발 9명의 얼굴과 이름을 수비 위치에 배치한 수비도
    - 양 팀 모두 선발투수와 1~9번 타자가 확인된 뒤 발송
 
 프리뷰 데이터가 아직 없으면 다음 정각에 다시 확인합니다. 라인업은 경기 전 기본 5분 간격으로 확인하며, 경기 시작 후에도 아직 발송되지 않았다면 계속 확인합니다.
@@ -134,7 +135,7 @@ YouTube 하이라이트와 네이버 쇼츠가 아직 등록되지 않았다면 
 
 | 한글 명령 | 영문 명령 | 기능 |
 | --- | --- | --- |
-| `/라인업` | `/lineup` | 오늘 경기 양 팀 선발 라인업과 선수 사진 |
+| `/라인업` | `/lineup` | 오늘 경기 양 팀 선발 라인업·선수 사진과 KIA 수비 배치도 |
 | `/일정` | `/schedule` | 오늘 이후 KIA 경기 일정을 최대 4개 연전 단위로 표시 |
 | `/기록` | `/record` | 오늘 KIA 경기 타자·투수 박스스코어 |
 | `/순위` | `/rank` | 시즌 팀 순위, 게임 차, 연속 경기 결과, 최근 10경기 |
@@ -269,7 +270,7 @@ tail -f logs/bot.log
 
 ```bash
 source .venv/bin/activate
-python3 -m py_compile bot.py config.py naver_api.py naver_weather.py parser.py telegram.py youtube.py
+python3 -m py_compile bot.py config.py lineup_image.py naver_api.py naver_weather.py parser.py telegram.py youtube.py
 python3 -m unittest
 ```
 
@@ -278,7 +279,7 @@ python3 -m unittest
 ```bash
 python3 -m unittest test_parser
 python3 -m unittest test_bot
-python3 -m unittest test_naver_api test_weather test_telegram test_youtube
+python3 -m unittest test_lineup_image test_naver_api test_weather test_telegram test_youtube
 ```
 
 ## 상태와 재시도
