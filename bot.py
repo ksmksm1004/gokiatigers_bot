@@ -1175,6 +1175,7 @@ def dispatch_relay_events(
             remember_plate_rbi_baseline(state, event)
             if is_batter_result_event(event):
                 remember_plate_result(state, event, player_record)
+            remember_plate_score(state, event)
 
         if event.is_attack_start:
             pitcher_lines = []
@@ -1262,29 +1263,130 @@ def remember_plate_result(state: dict[str, Any], event, player_record: dict[str,
     totals = state.setdefault("plateResultTotals", {})
     batter_totals = totals.setdefault(str(event.batter_code), {})
     current_rbi = _int_like(player_record.get("rbi"))
-    if "rbi" in batter_totals:
-        player_for_label["rbi"] = max(0, current_rbi - _int_like(batter_totals.get("rbi")))
+    had_completed_total = "rbi" in batter_totals
+    remaining_rbi = _allocate_delayed_rbi(state, str(event.batter_code), current_rbi)
+    known_completed_rbi = _int_like(batter_totals.get("rbi"))
+    if "pendingRbi" in batter_totals:
+        player_for_label["rbi"] = max(
+            _int_like(batter_totals.get("pendingRbi")),
+            remaining_rbi,
+        )
+        completed_rbi = max(
+            known_completed_rbi,
+            current_rbi,
+            _int_like(batter_totals.get("pendingRbiTotal")),
+        )
+    elif had_completed_total:
+        player_for_label["rbi"] = remaining_rbi
+        completed_rbi = max(known_completed_rbi, current_rbi)
     else:
         player_for_label["rbi"] = current_rbi if _int_like(player_record.get("ab")) <= 1 else 0
+        completed_rbi = current_rbi
     label = plate_result_label(event, player_for_label)
+    batter_totals["rbi"] = completed_rbi
+    batter_totals.pop("pendingRbi", None)
+    batter_totals.pop("pendingRbiTotal", None)
     if not label:
         return
-    batter_totals["rbi"] = current_rbi
     histories = state.setdefault("plateResultHistories", {})
     history = histories.setdefault(str(event.batter_code), [])
     event_id = int(event.event_id)
     if any(int(item.get("eventId") or 0) == event_id for item in history):
         return
-    history.append({"eventId": event_id, "label": label})
+    history.append(
+        {
+            "eventId": event_id,
+            "label": label,
+            "rbi": _int_like(player_for_label.get("rbi")),
+        }
+    )
     history.sort(key=lambda item: int(item.get("eventId") or 0))
+    active_results = state.setdefault("activePlateResults", {})
+    active_results[str(event.batter_code)] = event_id
 
 
 def remember_plate_rbi_baseline(state: dict[str, Any], event) -> None:
     if not event.batter_code or event.is_plate_result or not event.batter_record:
         return
+    batter_code = str(event.batter_code)
+    (state.get("activePlateResults") or {}).pop(batter_code, None)
     totals = state.setdefault("plateResultTotals", {})
-    batter_totals = totals.setdefault(str(event.batter_code), {})
-    batter_totals["rbi"] = _int_like(event.batter_record.get("rbi"))
+    batter_totals = totals.setdefault(batter_code, {})
+    snapshot_rbi = _int_like(event.batter_record.get("rbi"))
+    had_completed_total = "rbi" in batter_totals
+    remaining_rbi = _allocate_delayed_rbi(state, batter_code, snapshot_rbi)
+    if had_completed_total:
+        plate_rbi = remaining_rbi
+    else:
+        plate_appearances = _int_like(event.batter_record.get("pa"))
+        if not plate_appearances:
+            plate_appearances = sum(
+                _int_like(event.batter_record.get(key))
+                for key in ("ab", "bb", "hbp")
+            )
+        if plate_appearances:
+            plate_rbi = snapshot_rbi if plate_appearances == 1 else 0
+        else:
+            batter_totals["rbi"] = snapshot_rbi
+            plate_rbi = 0
+    batter_totals["pendingRbi"] = plate_rbi
+    batter_totals["pendingRbiTotal"] = snapshot_rbi
+
+
+def remember_plate_score(state: dict[str, Any], event) -> None:
+    if not event.batter_code or not event.is_score_event:
+        return
+    batter_code = str(event.batter_code)
+    active_event_id = _int_like((state.get("activePlateResults") or {}).get(batter_code))
+    if not active_event_id:
+        return
+    history = (state.get("plateResultHistories") or {}).get(batter_code, [])
+    for item in reversed(history):
+        if _int_like(item.get("eventId")) == active_event_id:
+            item["runsScored"] = _int_like(item.get("runsScored")) + 1
+            return
+
+
+def _allocate_delayed_rbi(state: dict[str, Any], batter_code: str, cumulative_rbi: int) -> int:
+    totals = state.setdefault("plateResultTotals", {})
+    batter_totals = totals.setdefault(str(batter_code), {})
+    if "rbi" not in batter_totals:
+        return max(0, cumulative_rbi)
+
+    completed_rbi = _int_like(batter_totals.get("rbi"))
+    remaining_rbi = max(0, cumulative_rbi - completed_rbi)
+    if not remaining_rbi:
+        return 0
+
+    history = (state.get("plateResultHistories") or {}).get(str(batter_code), [])
+    for item in history:
+        assigned_rbi = _history_item_rbi(item)
+        available_rbi = max(0, _int_like(item.get("runsScored")) - assigned_rbi)
+        if not available_rbi:
+            continue
+        added_rbi = min(remaining_rbi, available_rbi)
+        total_rbi = assigned_rbi + added_rbi
+        item["rbi"] = total_rbi
+        item["label"] = _plate_label_with_rbi(str(item.get("label") or ""), total_rbi)
+        completed_rbi += added_rbi
+        remaining_rbi -= added_rbi
+        if not remaining_rbi:
+            break
+
+    batter_totals["rbi"] = completed_rbi
+    return remaining_rbi
+
+
+def _history_item_rbi(item: dict[str, Any]) -> int:
+    if "rbi" in item:
+        return _int_like(item.get("rbi"))
+    match = re.search(r"\(타점(\d+)\)$", str(item.get("label") or ""))
+    return int(match.group(1)) if match else 0
+
+
+def _plate_label_with_rbi(label: str, rbi: int) -> str:
+    base_label = re.sub(r"\(타점\d+\)$", "", label)
+    return f"{base_label}(타점{rbi})" if base_label and rbi else base_label
 
 
 def state_plate_results(state: dict[str, Any], batter_code: str | None) -> list[dict[str, Any]]:

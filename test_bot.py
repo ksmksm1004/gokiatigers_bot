@@ -18,6 +18,7 @@ from bot import (
     record_options_keyboard,
     remember_plate_result,
     remember_plate_rbi_baseline,
+    remember_plate_score,
     resolve_cancellation_reason,
     resume_relay_for_game,
     schedule_kia_highlight_after_rankings,
@@ -1479,6 +1480,79 @@ class RelayPlateHistoryStateTest(unittest.TestCase):
         )
 
         self.assertEqual(state["plateResultHistories"]["52605"][0]["label"], "안타(타점1)")
+
+    def test_post_plate_rbi_snapshots_attach_rbi_to_the_correct_result(self):
+        state = {}
+        plate_appearances = [
+            ("카스트로 : 우익수 플라이 아웃", {"pa": 1, "ab": 1, "rbi": 0}),
+            ("카스트로 : 몸에 맞는 볼", {"pa": 2, "ab": 1, "hbp": 1, "rbi": 1}),
+            ("카스트로 : 우중간 1루타", {"pa": 3, "ab": 2, "hbp": 1, "rbi": 2}),
+            ("카스트로 : 우익수 오른쪽 1루타", {"pa": 4, "ab": 3, "hbp": 1, "rbi": 2}),
+        ]
+
+        for index, (text, snapshot) in enumerate(plate_appearances, 1):
+            remember_plate_rbi_baseline(
+                state,
+                SimpleNamespace(
+                    batter_code="56626",
+                    is_plate_result=False,
+                    batter_record=snapshot,
+                ),
+            )
+            remember_plate_result(
+                state,
+                SimpleNamespace(event_id=index, text=text, batter_code="56626"),
+                {"name": "카스트로", "batOrder": 4, **snapshot},
+            )
+
+        labels = [item["label"] for item in state["plateResultHistories"]["56626"]]
+        self.assertEqual(labels, ["플라이", "사구(타점1)", "안타(타점1)", "안타"])
+
+    def test_delayed_rbi_update_is_attached_to_the_previous_scoring_hit(self):
+        state = {
+            "plateResultTotals": {"56626": {"rbi": 1}},
+            "plateResultHistories": {
+                "56626": [
+                    {"eventId": 61, "label": "플라이", "rbi": 0},
+                    {"eventId": 159, "label": "사구(타점1)", "rbi": 1, "runsScored": 1},
+                ]
+            },
+        }
+        sixth_inning_hit = SimpleNamespace(
+            event_id=284,
+            text="카스트로 : 우중간 1루타",
+            batter_code="56626",
+        )
+
+        remember_plate_result(
+            state,
+            sixth_inning_hit,
+            {"name": "카스트로", "batOrder": 4, "ab": 2, "hit": 1, "rbi": 1},
+        )
+        remember_plate_score(
+            state,
+            SimpleNamespace(batter_code="56626", is_score_event=True),
+        )
+        remember_plate_rbi_baseline(
+            state,
+            SimpleNamespace(
+                batter_code="56626",
+                is_plate_result=False,
+                batter_record={"pa": 4, "ab": 3, "hbp": 1, "rbi": 2},
+            ),
+        )
+        remember_plate_result(
+            state,
+            SimpleNamespace(
+                event_id=430,
+                text="카스트로 : 우익수 오른쪽 1루타",
+                batter_code="56626",
+            ),
+            {"name": "카스트로", "batOrder": 4, "ab": 3, "hit": 2, "rbi": 2},
+        )
+
+        labels = [item["label"] for item in state["plateResultHistories"]["56626"]]
+        self.assertEqual(labels, ["플라이", "사구(타점1)", "안타(타점1)", "안타"])
 
     def test_complete_plate_history_corrects_inflated_api_hit_total(self):
         player = {
