@@ -645,12 +645,23 @@ def kia_half_summary_message(
         return ""
 
     side = "home" if half == "말" else "away"
-    lineup_by_code = {str(player.get("pcode")): player for player in active_lineup(relay, side)}
+    lineup = active_lineup(relay, side)
+    lineup_by_code = {str(player.get("pcode")): player for player in lineup}
+    lineup_by_order = {_to_int(player.get("batOrder")): player for player in lineup}
     out_results = half_out_results(events, inning, half)
+    stranded_runners = half_stranded_runners(events, inning, half)
+    stranded_by_order: dict[int, list[int]] = {}
+    for base, batting_order in stranded_runners.items():
+        stranded_by_order.setdefault(batting_order, []).append(base)
     used_codes: list[str] = []
     for event in events:
         if event.inning == inning and event.half == half and event.batter_code and event.batter_code not in used_codes:
             used_codes.append(event.batter_code)
+    for batting_order in stranded_by_order:
+        player = lineup_by_order.get(batting_order)
+        code = str((player or {}).get("pcode") or "")
+        if code and code not in used_codes:
+            used_codes.append(code)
     if not used_codes:
         return ""
 
@@ -663,14 +674,17 @@ def kia_half_summary_message(
         if player:
             line = format_batter_summary_stats(player)
             player_name = str(player.get("name") or "")
-            out_labels = [
+            result_labels = [
                 result.tagged_label
                 for result in out_results
                 if (result.player_code and result.player_code == str(code))
                 or (result.player_name and result.player_name == player_name)
             ]
-            if out_labels:
-                line += f" | {' '.join(out_labels)}"
+            stranded_bases = stranded_by_order.get(_to_int(player.get("batOrder")), [])
+            if stranded_bases:
+                result_labels.append(_stranded_runner_label(stranded_bases))
+            if result_labels:
+                line += f" | {' '.join(result_labels)}"
             lines.append(line)
     if pitcher_lines:
         lines += ["", *pitcher_lines]
@@ -683,6 +697,33 @@ def previous_half_out_labels(events: list[RelayEvent], started_by_event: RelayEv
         return []
     inning, half = previous_half
     return [result.tagged_label for result in half_out_results(events, inning, half)]
+
+
+def previous_half_result_labels(events: list[RelayEvent], started_by_event: RelayEvent) -> list[str]:
+    previous_half = _previous_half(started_by_event)
+    if previous_half is None:
+        return []
+    inning, half = previous_half
+    labels = [result.tagged_label for result in half_out_results(events, inning, half)]
+    stranded_runners = half_stranded_runners(events, inning, half)
+    if stranded_runners:
+        labels.append(_stranded_runner_label(list(stranded_runners)))
+    return labels
+
+
+def half_stranded_runners(events: list[RelayEvent], inning: int, half: str) -> dict[int, int]:
+    half_events = sorted(
+        (event for event in events if event.inning == inning and event.half == half),
+        key=lambda event: event.event_id,
+    )
+    if not half_events:
+        return {}
+    final_state = half_events[-1].current_state or {}
+    return {
+        base: _to_int(final_state.get(f"base{base}"))
+        for base in (1, 2, 3)
+        if _to_int(final_state.get(f"base{base}"))
+    }
 
 
 def previous_half_pitcher_lines(
@@ -751,6 +792,10 @@ def half_out_results(events: list[RelayEvent], inning: int, half: str) -> list[H
         previous_out = current_out
 
     return sorted(results, key=lambda result: result.out_numbers[0])
+
+
+def _stranded_runner_label(bases: list[int]) -> str:
+    return "잔루" + "".join(str(base) for base in sorted(bases))
 
 
 def half_key(event: RelayEvent) -> str:

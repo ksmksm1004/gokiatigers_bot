@@ -52,8 +52,8 @@ from parser import (
     plate_result_history,
     player_photo_url,
     pitcher_photo_url,
-    previous_half_out_labels,
     previous_half_pitcher_lines,
+    previous_half_result_labels,
     record_options_message,
     resolve_record_option,
     should_send_relay_event,
@@ -1178,7 +1178,7 @@ def dispatch_relay_events(
 
         if event.is_attack_start:
             pitcher_lines = []
-            out_labels = []
+            previous_half_labels = []
             if is_kia_batting(event, home_code, away_code, settings.team_code):
                 side = "home" if event.home_or_away == "1" else "away"
                 pitcher_lines, current_snapshot = changed_pitcher_lines(
@@ -1187,7 +1187,7 @@ def dispatch_relay_events(
                     state.get("lastKiaPitcherSnapshot"),
                 )
                 state["lastKiaPitcherSnapshot"] = current_snapshot
-                out_labels = previous_half_out_labels(all_events, event)
+                previous_half_labels = previous_half_result_labels(all_events, event)
             expected = expected_batters_message(
                 event,
                 relay,
@@ -1197,7 +1197,7 @@ def dispatch_relay_events(
                 home_name,
                 settings.team_code,
                 pitcher_lines,
-                out_labels,
+                previous_half_labels,
             )
             if expected:
                 telegram.send_message(expected)

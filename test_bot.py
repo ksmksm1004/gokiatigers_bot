@@ -1216,29 +1216,73 @@ class KiaHalfSummaryTest(unittest.TestCase):
                 {
                     "inn": 6,
                     "homeOrAway": "1",
-                    "title": "7번타자 허인서",
+                    "title": "5번타자 노시환",
                     "textOptions": [
                         {
                             "seqno": 341,
-                            "text": "허인서 : 삼진 아웃",
-                            "currentGameState": {"awayScore": 3, "homeScore": 2, "batter": "7", "out": "1"},
+                            "text": "노시환 : 삼진 아웃",
+                            "currentGameState": {
+                                "awayScore": 3,
+                                "homeScore": 2,
+                                "batter": "5",
+                                "out": "1",
+                                "base1": "0",
+                                "base2": "0",
+                                "base3": "0",
+                            },
                         }
                     ],
                 },
                 {
                     "inn": 6,
                     "homeOrAway": "1",
-                    "title": "8번타자 이도윤",
+                    "title": "7번타자 문현빈",
                     "textOptions": [
                         {
-                            "seqno": 344,
-                            "text": "이도윤 : 유격수 병살타 아웃",
-                            "currentGameState": {"awayScore": 3, "homeScore": 2, "batter": "8", "out": "3"},
+                            "seqno": 342,
+                            "text": "문현빈 : 2루수 앞 땅볼로 출루",
+                            "currentGameState": {
+                                "awayScore": 3,
+                                "homeScore": 2,
+                                "batter": "7",
+                                "out": "1",
+                                "base1": "7",
+                                "base2": "0",
+                                "base3": "0",
+                            },
                         },
                         {
+                            "seqno": 343,
+                            "text": "1루주자 채은성 : 포스아웃",
+                            "currentGameState": {
+                                "awayScore": 3,
+                                "homeScore": 2,
+                                "batter": "7",
+                                "out": "2",
+                                "base1": "7",
+                                "base2": "0",
+                                "base3": "0",
+                            },
+                        },
+                    ],
+                },
+                {
+                    "inn": 6,
+                    "homeOrAway": "1",
+                    "title": "8번타자 최재훈",
+                    "textOptions": [
+                        {
                             "seqno": 345,
-                            "text": "1루주자 이원석 : 포스아웃",
-                            "currentGameState": {"awayScore": 3, "homeScore": 2, "batter": "8", "out": "3"},
+                            "text": "최재훈 : 우익수 플라이 아웃",
+                            "currentGameState": {
+                                "awayScore": 3,
+                                "homeScore": 2,
+                                "batter": "8",
+                                "out": "3",
+                                "base1": "7",
+                                "base2": "0",
+                                "base3": "0",
+                            },
                         },
                     ],
                 },
@@ -1274,7 +1318,7 @@ class KiaHalfSummaryTest(unittest.TestCase):
             )
 
         self.assertEqual(len(telegram.messages), 1)
-        self.assertIn("KIA 3 : 2 한화 (삼진1 병살타23)", telegram.messages[0])
+        self.assertIn("KIA 3 : 2 한화 (삼진1 포스2 플라이3 잔루1)", telegram.messages[0])
 
     def test_process_relay_loads_previous_inning_for_home_kia_summary(self):
         current_relay = {
