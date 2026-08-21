@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from config import Settings, get_settings
-from kbo_api import KBOPlayerCandidate, KBOPlayerClient, format_player_record
+from kbo_api import KBOPlayerCandidate, KBOPlayerClient, format_head_to_head_results, format_player_record
 from lineup_image import render_defensive_lineup_image
 from naver_api import NaverSportsClient, unwrap
 from naver_weather import NaverWeatherClient
@@ -69,6 +69,8 @@ BOT_COMMANDS = [
     ("/lineup", "오늘 KIA 경기 선발 라인업 확인"),
     ("/일정", "KIA 향후 경기 일정 확인"),
     ("/schedule", "KIA 향후 경기 일정 확인"),
+    ("/상대전적", "KIA 상대 팀별 시즌 전적 확인"),
+    ("/headtohead", "KIA 상대 팀별 시즌 전적 확인"),
     ("/기록", "오늘 KIA 경기 기록 확인"),
     ("/record", "오늘 KIA 경기 기록 확인"),
     ("/순위", "KBO 팀 순위 확인"),
@@ -94,6 +96,7 @@ BOT_COMMANDS = [
 TELEGRAM_MENU_COMMANDS = [
     ("/lineup", "오늘 KIA 경기 선발 라인업 확인"),
     ("/schedule", "KIA 향후 경기 일정 확인"),
+    ("/headtohead", "KIA 상대 팀별 시즌 전적 확인"),
     ("/record", "오늘 KIA 경기 기록 확인"),
     ("/rank", "KBO 팀 순위 확인"),
     ("/monthlyrecord", "이번 달 KBO 팀 성적 확인"),
@@ -118,6 +121,25 @@ TEAM_NAMES = {
     "NC": "NC",
     "WO": "키움",
     "KT": "KT",
+}
+
+TEAM_QUERY_ALIASES = {
+    "기아": "HT",
+    "기아타이거즈": "HT",
+    "kia타이거즈": "HT",
+    "엘지": "LG",
+    "lg트윈스": "LG",
+    "한화이글스": "HH",
+    "ssg랜더스": "SK",
+    "쓱": "SK",
+    "삼성라이온즈": "SS",
+    "nc다이노스": "NC",
+    "엔씨": "NC",
+    "kt위즈": "KT",
+    "케이티": "KT",
+    "롯데자이언츠": "LT",
+    "두산베어스": "OB",
+    "키움히어로즈": "WO",
 }
 
 TEAM_PITCHER_LABELS = {
@@ -698,6 +720,48 @@ def send_monthly_team_records(
     current = now or datetime.now(settings.timezone)
     games = client.games_in_month(current.date())
     telegram.send_message(format_monthly_team_records(games, TEAM_NAMES, current.date()))
+
+
+def resolve_opponent_team(query: str) -> tuple[str, str] | None:
+    normalized = re.sub(r"\s+", "", str(query or "")).lower()
+    if not normalized:
+        return None
+    for code, name in TEAM_NAMES.items():
+        if normalized in {code.lower(), re.sub(r"\s+", "", name).lower()}:
+            return code, name
+    code = TEAM_QUERY_ALIASES.get(normalized)
+    if not code:
+        return None
+    return code, TEAM_NAMES[code]
+
+
+def head_to_head_usage_message(query: str = "") -> str:
+    teams = ", ".join(TEAM_NAMES[code] for code in TEAM_NAMES if code != "HT")
+    if query:
+        return f"'{query}' 팀을 찾지 못했습니다.\n사용법: /상대전적 키움\n팀: {teams}"
+    return f"상대 팀을 입력해주세요.\n사용법: /상대전적 키움\n팀: {teams}"
+
+
+def send_head_to_head_record(
+    telegram: TelegramBot,
+    settings: Settings,
+    opponent_query: str,
+    kbo_client: KBOPlayerClient | None = None,
+    now: datetime | None = None,
+) -> None:
+    opponent = resolve_opponent_team(opponent_query)
+    if not opponent:
+        telegram.send_message(head_to_head_usage_message(opponent_query))
+        return
+    opponent_code, opponent_name = opponent
+    if opponent_code == settings.team_code:
+        telegram.send_message("KIA 이외의 상대 팀을 입력해주세요.")
+        return
+
+    current = now or datetime.now(settings.timezone)
+    games = (kbo_client or KBOPlayerClient()).team_schedule_results(current.year, settings.team_code)
+    team_name = TEAM_NAMES.get(settings.team_code, settings.team_code)
+    telegram.send_message(format_head_to_head_results(games, opponent_name, team_name))
 
 
 def send_record_options(telegram: TelegramBot, settings: Settings, state: dict[str, Any], record_type: str) -> None:
@@ -1576,6 +1640,8 @@ def handle_telegram_commands(
                 send_kia_record(client, telegram, game_id, settings.team_code)
             elif command in {"/일정", "/schedule"}:
                 send_team_schedule(client, telegram, settings, datetime.now(settings.timezone))
+            elif command in {"/상대전적", "/headtohead"}:
+                send_head_to_head_record(telegram, settings, command_arg)
             elif command in {"/순위", "/rank"}:
                 send_team_rankings(client, telegram, settings)
             elif command in {"/월간성적", "/monthlyrecord"}:

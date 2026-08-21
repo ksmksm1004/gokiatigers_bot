@@ -1,8 +1,14 @@
 import unittest
+from datetime import date
+from unittest.mock import Mock
 
 from kbo_api import (
+    KBOGameResult,
+    KBOPlayerClient,
     KBOPlayerRecord,
+    format_head_to_head_results,
     format_player_record,
+    parse_schedule_results,
     parse_pitcher_season_hbp,
     parse_player_basic_page,
     parse_player_candidates,
@@ -68,6 +74,23 @@ PITCHER_TOTAL_HTML = """
   </tbody>
 </table>
 """
+
+
+def schedule_row(game_date, play_html, completed=True):
+    review = (
+        f"<a href='/Schedule/GameCenter/Main.aspx?gameDate={game_date}"
+        f"&gameId={game_date}WOHT0&section=REVIEW'>리뷰</a>"
+        if completed
+        else ""
+    )
+    return {
+        "row": [
+            {"Text": f"{game_date[4:6]}.{game_date[6:]}(화)", "Class": "day"},
+            {"Text": "<b>18:30</b>", "Class": "time"},
+            {"Text": play_html, "Class": "play"},
+            {"Text": review, "Class": "relay"},
+        ]
+    }
 
 
 class KBOPlayerSearchTest(unittest.TestCase):
@@ -155,6 +178,78 @@ class KBOPlayerPageTest(unittest.TestCase):
 
         self.assertIn("신인선수", message)
         self.assertTrue(message.endswith("정규시즌 기록이 없습니다."))
+
+
+class KBOScheduleResultTest(unittest.TestCase):
+    def test_parses_only_completed_review_rows(self):
+        payload = {
+            "rows": [
+                schedule_row(
+                    "20260414",
+                    '<span>키움</span><em><span class="lose">2</span><span>vs</span>'
+                    '<span class="win">6</span></em><span>KIA</span>',
+                ),
+                schedule_row(
+                    "20260724",
+                    '<span>키움</span><em><span class="win">8</span><span>vs</span>'
+                    '<span class="lose">5</span></em><span>KIA</span>',
+                ),
+                schedule_row(
+                    "20260821",
+                    '<span>KIA</span><em><span class="same">0</span><span>vs</span>'
+                    '<span class="same">0</span></em><span>키움</span>',
+                    completed=False,
+                ),
+            ]
+        }
+
+        games = parse_schedule_results(payload, 2026)
+
+        self.assertEqual(len(games), 2)
+        self.assertEqual(games[0].game_date, date(2026, 4, 14))
+        self.assertEqual(games[0].away_team, "키움")
+        self.assertEqual((games[0].away_score, games[0].home_score), (2, 6))
+
+    def test_client_requests_the_whole_regular_season_once(self):
+        response = Mock()
+        response.json.return_value = {"rows": []}
+        client = KBOPlayerClient()
+        client._request = Mock(return_value=response)
+
+        self.assertEqual(client.team_schedule_results(2026, "HT"), [])
+        self.assertEqual(client._request.call_count, 1)
+        self.assertEqual(
+            client._request.call_args.kwargs["data"],
+            {
+                "leId": 1,
+                "srIdList": "0,9,6",
+                "seasonId": 2026,
+                "gameMonth": "",
+                "teamId": "HT",
+            },
+        )
+
+    def test_formats_scores_in_away_home_order_and_results_from_kia_view(self):
+        games = [
+            KBOGameResult(date(2026, 4, 14), "키움", 2, 6, "KIA"),
+            KBOGameResult(date(2026, 6, 1), "KIA", 3, 3, "키움"),
+            KBOGameResult(date(2026, 7, 24), "키움", 8, 5, "KIA"),
+            KBOGameResult(date(2026, 8, 1), "KIA", 4, 1, "한화"),
+        ]
+
+        self.assertEqual(
+            format_head_to_head_results(games, "키움"),
+            "\n".join(
+                [
+                    "KIA vs 키움 상대 전적",
+                    "",
+                    "KIA 1승 1무 1패",
+                    "4/14 2:6 승",
+                    "6/1 3:3 무",
+                    "7/24 8:5 패",
+                ]
+            ),
+        )
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from bot import (
     remember_plate_result,
     remember_plate_rbi_baseline,
     remember_plate_score,
+    resolve_opponent_team,
     resolve_cancellation_reason,
     resume_relay_for_game,
     schedule_kia_highlight_after_rankings,
@@ -29,13 +30,14 @@ from bot import (
     send_due_kia_news,
     send_due_kia_highlight,
     send_game_end_record_once,
+    send_head_to_head_record,
     send_kia_news_command,
     send_monthly_team_records,
     send_player_record_lookup,
     with_state_plate_totals,
 )
 from config import Settings
-from kbo_api import KBOPlayerCandidate, KBOPlayerRecord
+from kbo_api import KBOGameResult, KBOPlayerCandidate, KBOPlayerRecord
 from parser import RelayEvent
 
 
@@ -401,6 +403,84 @@ class MonthlyTeamRecordCommandTest(unittest.TestCase):
         self.assertEqual(client.monthly_game_dates, [date(2026, 8, 18)])
         self.assertIn("2026 KBO 8월 월간 성적", telegram.messages[0])
         self.assertIn("1. KIA | 1승 0패 0무 | 승률 1.000", telegram.messages[0])
+
+
+class HeadToHeadCommandTest(unittest.TestCase):
+    def test_resolves_short_and_full_team_names(self):
+        self.assertEqual(resolve_opponent_team("키움"), ("WO", "키움"))
+        self.assertEqual(resolve_opponent_team("키움 히어로즈"), ("WO", "키움"))
+        self.assertEqual(resolve_opponent_team("엘지"), ("LG", "LG"))
+        self.assertEqual(resolve_opponent_team("SSG"), ("SK", "SSG"))
+        self.assertIsNone(resolve_opponent_team("없는팀"))
+
+    def test_sends_completed_head_to_head_results(self):
+        class ScheduleClient:
+            def __init__(self):
+                self.calls = []
+
+            def team_schedule_results(self, season, team_id):
+                self.calls.append((season, team_id))
+                return [
+                    KBOGameResult(date(2026, 4, 14), "키움", 2, 6, "KIA"),
+                    KBOGameResult(date(2026, 7, 24), "키움", 8, 5, "KIA"),
+                ]
+
+        client = ScheduleClient()
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+
+        send_head_to_head_record(
+            telegram,
+            settings,
+            "키움",
+            client,
+            datetime(2026, 8, 21, tzinfo=settings.timezone),
+        )
+
+        self.assertEqual(client.calls, [(2026, "HT")])
+        self.assertEqual(
+            telegram.messages[0],
+            "\n".join(
+                [
+                    "KIA vs 키움 상대 전적",
+                    "",
+                    "KIA 1승 0무 1패",
+                    "4/14 2:6 승",
+                    "7/24 8:5 패",
+                ]
+            ),
+        )
+
+    def test_missing_team_returns_usage_without_api_request(self):
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+
+        send_head_to_head_record(telegram, settings, "")
+
+        self.assertIn("사용법: /상대전적 키움", telegram.messages[0])
+
+    @patch("bot.send_head_to_head_record")
+    def test_korean_command_routes_team_argument(self, send_record):
+        telegram = FakeCommandTelegram(
+            [{"update_id": 12, "message": {"chat": {"id": "chat"}, "text": "/상대전적 키움"}}]
+        )
+        with TemporaryDirectory() as directory:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="chat",
+                dry_run=True,
+                state_path=Path(directory) / "state.json",
+            )
+            handle_telegram_commands(
+                FakeClient(),
+                object(),
+                telegram,
+                settings,
+                {"telegramUpdateOffset": 12},
+                None,
+            )
+
+        send_record.assert_called_once_with(telegram, settings, "키움")
 
 
 class PitchingChangePhotoTest(unittest.TestCase):

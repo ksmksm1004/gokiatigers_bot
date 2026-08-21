@@ -16,7 +16,7 @@ KIA 타이거즈 경기를 감시해 경기 전 정보, 실시간 중계, 경기
 - 경기 종료 10분 뒤 KIA 관련 기사 발송
 - TVING SPORTS YouTube 하이라이트와 네이버 쇼츠 발송
 - 우천·폭염 등 경기 취소 사유 판별
-- 일정, 순위, 월간 성적, 팀·타자·투수 기록, 뉴스, 날씨 명령 지원
+- 일정, 순위, 월간 성적, 상대 전적, 팀·타자·투수 기록, 뉴스, 날씨 명령 지원
 - `logs/state.json`을 이용한 재시작 복구 및 중복 발송 방지
 
 ## 자동 알림 흐름
@@ -140,6 +140,7 @@ YouTube 하이라이트와 네이버 쇼츠가 아직 등록되지 않았다면 
 | `/기록` | `/record` | 오늘 KIA 경기 타자·투수 박스스코어 |
 | `/순위` | `/rank` | 시즌 팀 순위, 게임 차, 연속 경기 결과, 최근 10경기 |
 | `/월간성적` | `/monthlyrecord` | 현재 월 종료 경기 기준 전체 팀 승·패·무와 승률 |
+| `/상대전적 [팀명]` | `/headtohead [팀명]` | 현재 시즌 KIA와 상대 팀의 완료 경기 전적 및 스코어 |
 | `/팀기록` | `/teamrecord` | 팀 주요 기록 종목 선택 |
 | `/타자기록 [선수명]` | `/hitterrecord [선수명]` | 타자 주요 기록 TOP 10 종목 선택 또는 개인 기록 조회 |
 | `/투수기록 [선수명]` | `/pitcherrecord [선수명]` | 투수 주요 기록 TOP 10 종목 선택 또는 개인 기록 조회 |
@@ -182,6 +183,17 @@ YouTube 하이라이트와 네이버 쇼츠가 아직 등록되지 않았다면 
 - 투수: 이름, 생년월일, 신장/체중, 연봉, 등번호, 포지션, 평균자책, 이닝, 승, 패, 세이브, 홀드, 탈삼진, 피안타, 피홈런, 사사구, 실점, 자책점, WHIP
 
 검색 결과에 같은 이름과 같은 선수 유형이 여러 명이면 팀, 포지션, 등번호, 투타 정보가 표시된 인라인 버튼으로 선수를 선택합니다. 현역 등록 선수와 이름이 정확히 일치하는 결과만 사용합니다.
+
+### 상대 전적 조회
+
+팀 이름을 명령 뒤에 붙이면 현재 시즌 KIA와 해당 팀이 완료한 경기를 날짜순으로 표시합니다. 각 스코어는 KBO 일정과 같은 원정팀:홈팀 순서이며, 승·무·패는 KIA 기준입니다.
+
+```text
+/상대전적 키움
+/headtohead 키움히어로즈
+```
+
+`KIA`, `기아`, `HT`는 상대 팀으로 지정할 수 없습니다. 아직 맞대결이 없거나 모두 예정 경기이면 완료된 경기가 없다는 메시지를 표시하며, 예정 경기의 `0:0`은 집계하지 않습니다.
 
 ### 월간 성적 계산
 
@@ -270,7 +282,7 @@ tail -f logs/bot.log
 
 ```bash
 source .venv/bin/activate
-python3 -m py_compile bot.py config.py lineup_image.py naver_api.py naver_weather.py parser.py telegram.py youtube.py
+python3 -m py_compile bot.py config.py kbo_api.py lineup_image.py naver_api.py naver_weather.py parser.py telegram.py youtube.py
 python3 -m unittest
 ```
 
@@ -279,7 +291,7 @@ python3 -m unittest
 ```bash
 python3 -m unittest test_parser
 python3 -m unittest test_bot
-python3 -m unittest test_lineup_image test_naver_api test_weather test_telegram test_youtube
+python3 -m unittest test_kbo_api test_lineup_image test_naver_api test_weather test_telegram test_youtube
 ```
 
 ## 상태와 재시도
@@ -434,7 +446,7 @@ pkill -f "/old/path/to/gokiatigers_bot/.venv"
 | --- | --- |
 | `bot.py` | 메인 루프, 상태 관리, 명령 처리, 알림 예약과 발송 |
 | `config.py` | `.env` 로드와 실행 설정 |
-| `kbo_api.py` | KBO 선수 검색, 개인 기본정보·현재 시즌 기록 파싱과 메시지 포맷 |
+| `kbo_api.py` | KBO 선수 검색·개인 기록과 시즌 일정·상대 전적 파싱 및 메시지 포맷 |
 | `naver_api.py` | 네이버 스포츠 일정·프리뷰·중계·기록·뉴스·영상 API 클라이언트 |
 | `naver_weather.py` | 경기장 위치 매핑, 네이버 날씨 파싱과 예보 출력 |
 | `parser.py` | API 응답 파싱, 중계 판정, 기록 집계와 메시지 포맷 |
@@ -447,6 +459,7 @@ pkill -f "/old/path/to/gokiatigers_bot/.venv"
 - 네이버 스포츠의 공개 웹 JSON 응답을 사용하므로 필드나 주소가 바뀌면 파서 수정이 필요할 수 있습니다.
 - 개인 선수 기록은 KBO `Basic.aspx`를 기준으로 하며, 투수 사사구 계산에 필요한 몸에 맞는 공만 같은 선수의 `Total.aspx` 현재 연도 행에서 보충합니다.
 - KBO 선수 검색과 상세 페이지 구조가 바뀌면 개인 기록 검색 또는 파서 수정이 필요할 수 있습니다.
+- 상대 전적은 KBO 시즌 일정에서 `경기종료` 리뷰가 제공된 경기만 집계하므로 예정·진행·취소 경기는 제외됩니다.
 - 투수 판정, 기사, 하이라이트, 쇼츠는 경기 종료 직후 바로 제공되지 않을 수 있으며 위 재시도 정책에 따라 후속 발송됩니다.
 - 월간 성적은 현재 월의 종료 경기만 실시간 계산하며 과거 월 기록을 별도 저장하지 않습니다.
 - 경기 취소 사유가 API에 없을 때 날씨로 우천·폭염을 추정하므로 공식 사유와 다를 수 있습니다.

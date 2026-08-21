@@ -4,6 +4,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin
@@ -13,6 +14,7 @@ import requests
 
 KBO_BASE_URL = "https://www.koreabaseball.com/"
 KBO_PLAYER_SEARCH_URL = urljoin(KBO_BASE_URL, "ws/Controls.asmx/GetSearchPlayer")
+KBO_SCHEDULE_URL = urljoin(KBO_BASE_URL, "ws/Schedule.asmx/GetScheduleList")
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,15 @@ class KBOPlayerRecord:
     position: str = ""
     photo_url: str = ""
     stats: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class KBOGameResult:
+    game_date: date
+    away_team: str
+    away_score: int
+    home_score: int
+    home_team: str
 
 
 @dataclass
@@ -146,6 +157,17 @@ class _PlayerPageParser(HTMLParser):
             self._table_section = ""
 
 
+class _FragmentTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        value = _clean_text(data)
+        if value:
+            self.parts.append(value)
+
+
 class KBOPlayerClient:
     def __init__(self) -> None:
         self.session = requests.Session()
@@ -182,6 +204,20 @@ class KBOPlayerClient:
             except (requests.RequestException, ValueError):
                 logging.warning("KBO pitcher HBP lookup failed for player %s.", player_id, exc_info=True)
         return record
+
+    def team_schedule_results(self, season: int, team_id: str = "HT") -> list[KBOGameResult]:
+        response = self._request(
+            "post",
+            KBO_SCHEDULE_URL,
+            data={
+                "leId": 1,
+                "srIdList": "0,9,6",
+                "seasonId": int(season),
+                "gameMonth": "",
+                "teamId": team_id,
+            },
+        )
+        return parse_schedule_results(response.json(), season)
 
     def _request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         for attempt in range(3):
@@ -230,6 +266,100 @@ def parse_player_candidates(
             )
         )
     return [candidate for candidate in candidates if candidate.player_id]
+
+
+def parse_schedule_results(payload: dict[str, Any], season: int) -> list[KBOGameResult]:
+    games: list[KBOGameResult] = []
+    for item in payload.get("rows") or []:
+        cells = item.get("row") or []
+        play_html = next(
+            (str(cell.get("Text") or "") for cell in cells if cell.get("Class") == "play"),
+            "",
+        )
+        review_html = next(
+            (
+                str(cell.get("Text") or "")
+                for cell in cells
+                if "section=REVIEW" in str(cell.get("Text") or "")
+            ),
+            "",
+        )
+        if not play_html or not review_html:
+            continue
+
+        date_match = re.search(r"gameDate=(\d{8})", review_html)
+        if not date_match:
+            continue
+        try:
+            game_date = datetime.strptime(date_match.group(1), "%Y%m%d").date()
+        except ValueError:
+            continue
+        if game_date.year != int(season):
+            continue
+
+        parser = _FragmentTextParser()
+        parser.feed(play_html)
+        if len(parser.parts) < 5:
+            continue
+        away_team = parser.parts[0]
+        home_team = parser.parts[-1]
+        scores = [part for part in parser.parts[1:-1] if re.fullmatch(r"\d+", part)]
+        if len(scores) != 2:
+            continue
+        games.append(
+            KBOGameResult(
+                game_date=game_date,
+                away_team=away_team,
+                away_score=int(scores[0]),
+                home_score=int(scores[1]),
+                home_team=home_team,
+            )
+        )
+    return sorted(games, key=lambda game: game.game_date)
+
+
+def format_head_to_head_results(
+    games: list[KBOGameResult],
+    opponent_name: str,
+    team_name: str = "KIA",
+) -> str:
+    selected = sorted(
+        (
+            game
+            for game in games
+            if {game.away_team, game.home_team} == {team_name, opponent_name}
+        ),
+        key=lambda game: game.game_date,
+    )
+    wins = draws = losses = 0
+    rows: list[str] = []
+    for game in selected:
+        team_score = game.away_score if game.away_team == team_name else game.home_score
+        opponent_score = game.home_score if game.away_team == team_name else game.away_score
+        if team_score > opponent_score:
+            result = "승"
+            wins += 1
+        elif team_score < opponent_score:
+            result = "패"
+            losses += 1
+        else:
+            result = "무"
+            draws += 1
+        rows.append(
+            f"{game.game_date.month}/{game.game_date.day} "
+            f"{game.away_score}:{game.home_score} {result}"
+        )
+
+    lines = [
+        f"{team_name} vs {opponent_name} 상대 전적",
+        "",
+        f"{team_name} {wins}승 {draws}무 {losses}패",
+    ]
+    if rows:
+        lines.extend(rows)
+    else:
+        lines += ["", "아직 완료된 경기가 없습니다."]
+    return "\n".join(lines)
 
 
 def parse_player_basic_page(html: str, player_id: str, record_type: str) -> KBOPlayerRecord:
