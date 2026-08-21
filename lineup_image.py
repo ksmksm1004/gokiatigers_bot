@@ -4,7 +4,7 @@ import logging
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
@@ -43,7 +43,7 @@ FONT_CANDIDATES = (
     Path("/usr/share/fonts/truetype/nanum/NanumGothic.ttf"),
 )
 
-PhotoLoader = Callable[[str], bytes | None]
+PhotoLoader = Callable[[str], Optional[bytes]]
 
 
 def defensive_lineup_players(preview: dict[str, Any], side: str) -> list[dict[str, Any]]:
