@@ -30,6 +30,7 @@ from bot import (
     send_due_kia_news,
     send_due_kia_highlight,
     send_game_end_record_once,
+    send_current_kbo_scores,
     send_head_to_head_record,
     send_kia_news_command,
     send_monthly_team_records,
@@ -685,6 +686,138 @@ class KiaNewsScheduleTest(unittest.TestCase):
 
 
 class DailyGameResultsTest(unittest.TestCase):
+    def test_current_score_command_includes_inning_only_for_live_games(self):
+        games = [
+            {
+                "gameId": "game1",
+                "awayTeamCode": "HT",
+                "homeTeamCode": "WO",
+                "statusCode": "RESULT",
+            },
+            {
+                "gameId": "game2",
+                "awayTeamCode": "KT",
+                "homeTeamCode": "SK",
+                "statusCode": "STARTED",
+            },
+            {
+                "gameId": "game3",
+                "awayTeamCode": "LG",
+                "homeTeamCode": "HH",
+                "statusCode": "BEFORE",
+            },
+        ]
+        details = {
+            "game1": {
+                "awayTeamName": "KIA",
+                "homeTeamName": "키움",
+                "awayTeamScore": 11,
+                "homeTeamScore": 1,
+                "statusCode": "RESULT",
+                "statusInfo": "경기종료",
+            },
+            "game2": {
+                "awayTeamName": "KT",
+                "homeTeamName": "SSG",
+                "awayTeamScore": 3,
+                "homeTeamScore": 3,
+                "statusCode": "STARTED",
+                "statusInfo": "11회말",
+            },
+            "game3": {
+                "awayTeamName": "LG",
+                "homeTeamName": "한화",
+                "awayTeamScore": 0,
+                "homeTeamScore": 0,
+                "statusCode": "BEFORE",
+                "statusInfo": "경기전",
+            },
+        }
+
+        class ScoreClient:
+            def games_on(self, day):
+                return games
+
+            def game_detail(self, game_id):
+                return {"result": {"game": details[game_id]}}
+
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+
+        send_current_kbo_scores(
+            ScoreClient(),
+            telegram,
+            settings,
+            datetime(2026, 8, 21, 22, 0, tzinfo=settings.timezone),
+        )
+
+        self.assertEqual(
+            telegram.messages[0],
+            "\n".join(
+                [
+                    "현재 KBO 경기 결과",
+                    "KIA 11 : 1 키움",
+                    "KT 3 : 3 SSG (11회말)",
+                    "LG vs 한화 (경기전)",
+                ]
+            ),
+        )
+
+    @patch("bot.send_current_kbo_scores")
+    def test_score_command_routes_without_requiring_a_kia_game(self, send_scores):
+        telegram = FakeCommandTelegram(
+            [{"update_id": 13, "message": {"chat": {"id": "chat"}, "text": "/스코어"}}]
+        )
+        with TemporaryDirectory() as directory:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="chat",
+                dry_run=True,
+                state_path=Path(directory) / "state.json",
+            )
+            client = FakeClient()
+            handle_telegram_commands(
+                client,
+                object(),
+                telegram,
+                settings,
+                {"telegramUpdateOffset": 13},
+                None,
+            )
+
+        send_scores.assert_called_once_with(client, telegram, settings)
+
+    def test_current_score_marks_a_failed_game_detail_lookup(self):
+        class ScoreClient:
+            def games_on(self, day):
+                return [
+                    {
+                        "gameId": "game1",
+                        "awayTeamCode": "HT",
+                        "homeTeamCode": "WO",
+                        "statusCode": "STARTED",
+                    }
+                ]
+
+            def game_detail(self, game_id):
+                raise RuntimeError("temporary failure")
+
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+
+        with self.assertLogs(level="ERROR"):
+            send_current_kbo_scores(
+                ScoreClient(),
+                telegram,
+                settings,
+                datetime(2026, 8, 21, 22, 0, tzinfo=settings.timezone),
+            )
+
+        self.assertEqual(
+            telegram.messages[0],
+            "현재 KBO 경기 결과\nKIA vs 키움 (정보 확인 중)",
+        )
+
     @patch(
         "bot.find_tving_kia_highlight",
         return_value={

@@ -1138,15 +1138,28 @@ def format_monthly_team_records(
     return "\n".join(lines)
 
 
-def format_daily_game_results(results: list[dict[str, Any]]) -> str:
-    lines = ["오늘의 KBO 경기 결과"]
+def format_daily_game_results(
+    results: list[dict[str, Any]],
+    title: str = "오늘의 KBO 경기 결과",
+) -> str:
+    lines = [title]
     for result in results:
         away_name = result.get("awayName", "원정")
         home_name = result.get("homeName", "홈")
         if result.get("cancelled"):
             lines.append(f"{away_name} vs {home_name} | 경기취소")
             continue
-        lines.append(f"{away_name} {result.get('awayScore', '-')} : {result.get('homeScore', '-')} {home_name}")
+        status_text = str(result.get("statusText") or "").strip()
+        suffix = f" ({status_text})" if status_text else ""
+        away_score = result.get("awayScore")
+        home_score = result.get("homeScore")
+        if away_score is None and home_score is None:
+            lines.append(f"{away_name} vs {home_name}{suffix}")
+            continue
+        lines.append(
+            f"{away_name} {away_score if away_score is not None else '-'} : "
+            f"{home_score if home_score is not None else '-'} {home_name}{suffix}"
+        )
     return "\n".join(lines)
 
 

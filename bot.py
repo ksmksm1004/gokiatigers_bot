@@ -69,6 +69,8 @@ BOT_COMMANDS = [
     ("/lineup", "오늘 KIA 경기 선발 라인업 확인"),
     ("/일정", "KIA 향후 경기 일정 확인"),
     ("/schedule", "KIA 향후 경기 일정 확인"),
+    ("/스코어", "오늘 KBO 전체 경기 현재 스코어 확인"),
+    ("/score", "오늘 KBO 전체 경기 현재 스코어 확인"),
     ("/상대전적", "KIA 상대 팀별 시즌 전적 확인"),
     ("/headtohead", "KIA 상대 팀별 시즌 전적 확인"),
     ("/기록", "오늘 KIA 경기 기록 확인"),
@@ -96,6 +98,7 @@ BOT_COMMANDS = [
 TELEGRAM_MENU_COMMANDS = [
     ("/lineup", "오늘 KIA 경기 선발 라인업 확인"),
     ("/schedule", "KIA 향후 경기 일정 확인"),
+    ("/score", "오늘 KBO 전체 경기 현재 스코어"),
     ("/headtohead", "KIA 상대 팀별 시즌 전적 확인"),
     ("/record", "오늘 KIA 경기 기록 확인"),
     ("/rank", "KBO 팀 순위 확인"),
@@ -155,7 +158,7 @@ TEAM_PITCHER_LABELS = {
     "KT": "KT",
 }
 
-TERMINAL_SCHEDULE_STATUS = {"RESULT", "END", "CANCEL", "CANCELED", "CANCELLED"}
+TERMINAL_SCHEDULE_STATUS = {"RESULT", "END", "ENDED", "CANCEL", "CANCELED", "CANCELLED"}
 PITCHING_DECISION_POLL_SECONDS = 60
 KIA_HIGHLIGHT_RETRY_MINUTES = 10
 KIA_HIGHLIGHT_MAX_ATTEMPTS = 12
@@ -905,6 +908,90 @@ def send_team_schedule(
     telegram.send_message(message)
 
 
+def send_current_kbo_scores(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    now: datetime | None = None,
+) -> None:
+    current = now or datetime.now(settings.timezone)
+    games = client.games_on(current.date())
+    games = [
+        game
+        for game in games
+        if str(game.get("awayTeamCode") or game.get("aCode") or "") in TEAM_NAMES
+        and str(game.get("homeTeamCode") or game.get("hCode") or "") in TEAM_NAMES
+    ]
+    if not games:
+        telegram.send_message("오늘 예정된 KBO 경기가 없습니다.")
+        return
+    results = fetch_current_game_results(client, games)
+    telegram.send_message(format_daily_game_results(results, "현재 KBO 경기 결과"))
+
+
+def fetch_current_game_results(
+    client: NaverSportsClient,
+    games: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for game in games:
+        game_id = str(game.get("gameId") or "")
+        detail: dict[str, Any] = {}
+        if game_id:
+            try:
+                detail = unwrap(client.game_detail(game_id), "game")
+            except Exception:
+                logging.exception("Failed to load current score for %s.", game_id)
+        current_game = merge_game_status(game, detail)
+        away_code = str(current_game.get("awayTeamCode") or current_game.get("aCode") or "")
+        home_code = str(current_game.get("homeTeamCode") or current_game.get("hCode") or "")
+        away_name = str(
+            current_game.get("awayTeamName")
+            or current_game.get("aName")
+            or TEAM_NAMES.get(away_code, away_code or "원정")
+        )
+        home_name = str(
+            current_game.get("homeTeamName")
+            or current_game.get("hName")
+            or TEAM_NAMES.get(home_code, home_code or "홈")
+        )
+        cancelled = is_cancelled_game(current_game)
+        result: dict[str, Any] = {
+            "awayName": away_name,
+            "homeName": home_name,
+            "cancelled": cancelled,
+        }
+        if not cancelled:
+            status = str(current_game.get("statusCode") or current_game.get("gameStatus") or "").upper()
+            if status not in {"BEFORE", "SCHEDULED", "READY"}:
+                away_score = _optional_score_from_game(current_game, "away")
+                home_score = _optional_score_from_game(current_game, "home")
+                if away_score is not None:
+                    result["awayScore"] = away_score
+                if home_score is not None:
+                    result["homeScore"] = home_score
+            result["statusText"] = (
+                current_game_status_text(current_game) if detail else "정보 확인 중"
+            )
+        results.append(result)
+    return results
+
+
+def current_game_status_text(game: dict[str, Any]) -> str:
+    status = str(game.get("statusCode") or game.get("gameStatus") or "").upper()
+    if is_cancelled_game(game) or status in TERMINAL_SCHEDULE_STATUS:
+        return ""
+    for key in ("statusInfo", "currentInning"):
+        value = str(game.get(key) or "").strip()
+        if value and value not in {"경기종료", "종료"}:
+            return value
+    if status in {"STARTED", "LIVE", "PLAYING"}:
+        return "경기중"
+    if status in {"BEFORE", "SCHEDULED", "READY"}:
+        return "경기전"
+    return ""
+
+
 def fetch_team_schedule_games(
     client: NaverSportsClient,
     start: date,
@@ -1640,6 +1727,8 @@ def handle_telegram_commands(
                 send_kia_record(client, telegram, game_id, settings.team_code)
             elif command in {"/일정", "/schedule"}:
                 send_team_schedule(client, telegram, settings, datetime.now(settings.timezone))
+            elif command in {"/스코어", "/score"}:
+                send_current_kbo_scores(client, telegram, settings)
             elif command in {"/상대전적", "/headtohead"}:
                 send_head_to_head_record(telegram, settings, command_arg)
             elif command in {"/순위", "/rank"}:
@@ -2193,7 +2282,7 @@ def is_terminal_game(game: dict[str, Any], cancelled_ids: set[str]) -> bool:
     status = str(game.get("statusCode") or "").upper()
     if game_id in cancelled_ids:
         return True
-    return status in {"RESULT", "END", "CANCEL", "CANCELED", "CANCELLED"}
+    return status in TERMINAL_SCHEDULE_STATUS
 
 
 def refresh_cancelled_games(
