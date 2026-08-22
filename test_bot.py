@@ -97,15 +97,25 @@ class FakeClient:
 
 class FakeTelegram:
     def __init__(self):
+        self.chat_id = ""
         self.messages = []
+        self.message_chat_ids = []
         self.photos = []
         self.reply_markups = []
         self.media_groups = []
         self.photo_files = []
         self.calls = []
+        self.administrators = {}
+        self.administrator_requests = []
+        self.administrator_error = None
+
+    def for_chat(self, chat_id):
+        self.chat_id = str(chat_id)
+        return self
 
     def send_message(self, text, reply_markup=None):
         self.messages.append(text)
+        self.message_chat_ids.append(self.chat_id)
         self.reply_markups.append(reply_markup)
 
     def send_photo(self, photo_url, caption):
@@ -120,6 +130,12 @@ class FakeTelegram:
         self.photo_files.append((photo, caption, filename))
         self.calls.append("photo_bytes")
 
+    def get_chat_administrators(self, chat_id):
+        self.administrator_requests.append(str(chat_id))
+        if self.administrator_error:
+            raise self.administrator_error
+        return self.administrators.get(str(chat_id), [])
+
 
 class FakeCommandTelegram(FakeTelegram):
     def __init__(self, updates):
@@ -132,6 +148,214 @@ class FakeCommandTelegram(FakeTelegram):
 
     def answer_callback_query(self, callback_query_id):
         self.answered_callbacks.append(callback_query_id)
+
+
+class MultiChatCommandTest(unittest.TestCase):
+    def test_command_reply_is_sent_only_to_its_source_chat(self):
+        telegram = FakeCommandTelegram(
+            [{"update_id": 20, "message": {"chat": {"id": "chat-b"}, "text": "/help"}}]
+        )
+        with TemporaryDirectory() as directory:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="chat-a",
+                telegram_chat_ids=("chat-a", "chat-b"),
+                dry_run=True,
+                state_path=Path(directory) / "state.json",
+            )
+            handle_telegram_commands(
+                FakeClient(),
+                object(),
+                telegram,
+                settings,
+                {"telegramUpdateOffset": 20},
+                None,
+            )
+
+        self.assertEqual(telegram.message_chat_ids, ["chat-b"])
+        self.assertTrue(telegram.messages[0].startswith("사용 가능한 명령어"))
+
+    @patch("bot.send_selected_record_stats")
+    def test_pending_record_selection_is_isolated_by_chat(self, send_stats):
+        telegram = FakeCommandTelegram(
+            [
+                {"update_id": 30, "message": {"chat": {"id": "chat-a"}, "text": "/타자기록"}},
+                {"update_id": 31, "message": {"chat": {"id": "chat-b"}, "text": "/투수기록"}},
+            ]
+        )
+        with TemporaryDirectory() as directory:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="chat-a",
+                telegram_chat_ids=("chat-a", "chat-b"),
+                dry_run=True,
+                state_path=Path(directory) / "state.json",
+            )
+            state = {"telegramUpdateOffset": 30}
+            client = FakeClient()
+            handle_telegram_commands(client, object(), telegram, settings, state, None)
+            self.assertEqual(
+                state["pendingRecordCommands"],
+                {"chat-a": "hitter", "chat-b": "pitcher"},
+            )
+
+            telegram.updates = [
+                {"update_id": 32, "message": {"chat": {"id": "chat-a"}, "text": "타율"}}
+            ]
+            handle_telegram_commands(client, object(), telegram, settings, state, None)
+
+        self.assertEqual(state["pendingRecordCommands"], {"chat-b": "pitcher"})
+        send_stats.assert_called_once_with(client, telegram, settings, "hitter", "타율")
+
+    def test_relay_control_commands_are_rejected_for_regular_group_members(self):
+        for index, command in enumerate(("/gg", "/re"), start=40):
+            with self.subTest(command=command), TemporaryDirectory() as directory:
+                telegram = FakeCommandTelegram(
+                    [
+                        {
+                            "update_id": index,
+                            "message": {
+                                "chat": {"id": "-100group", "type": "supergroup"},
+                                "from": {"id": 200},
+                                "text": command,
+                            },
+                        }
+                    ]
+                )
+                telegram.administrators["-100group"] = [
+                    {"status": "administrator", "user": {"id": 100}}
+                ]
+                settings = Settings(
+                    telegram_token="",
+                    telegram_chat_id="chat-a",
+                    telegram_chat_ids=("-100group",),
+                    dry_run=True,
+                    state_path=Path(directory) / "state.json",
+                )
+
+                handle_telegram_commands(
+                    FakeClient(),
+                    object(),
+                    telegram,
+                    settings,
+                    {"telegramUpdateOffset": index},
+                    "game1",
+                )
+
+                self.assertEqual(
+                    telegram.messages,
+                    ["이 명령은 그룹 관리자만 사용할 수 있습니다."],
+                )
+
+    def test_group_administrator_can_reach_relay_control_command(self):
+        telegram = FakeCommandTelegram(
+            [
+                {
+                    "update_id": 50,
+                    "message": {
+                        "chat": {"id": "-100group", "type": "supergroup"},
+                        "from": {"id": 100},
+                        "text": "/gg",
+                    },
+                }
+            ]
+        )
+        telegram.administrators["-100group"] = [
+            {"status": "administrator", "user": {"id": 100}}
+        ]
+        with TemporaryDirectory() as directory:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="chat-a",
+                telegram_chat_ids=("-100group",),
+                dry_run=True,
+                state_path=Path(directory) / "state.json",
+            )
+            handle_telegram_commands(
+                FakeClient(),
+                object(),
+                telegram,
+                settings,
+                {"telegramUpdateOffset": 50},
+                None,
+            )
+
+        self.assertEqual(telegram.administrator_requests, ["-100group"])
+        self.assertEqual(telegram.messages, ["오늘 확인된 KIA 경기가 없습니다."])
+
+    def test_relay_control_is_denied_when_admin_lookup_fails(self):
+        telegram = FakeCommandTelegram(
+            [
+                {
+                    "update_id": 55,
+                    "message": {
+                        "chat": {"id": "-100group", "type": "supergroup"},
+                        "from": {"id": 100},
+                        "text": "/gg",
+                    },
+                }
+            ]
+        )
+        telegram.administrator_error = RuntimeError("temporary failure")
+        with TemporaryDirectory() as directory:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="-100group",
+                dry_run=True,
+                state_path=Path(directory) / "state.json",
+            )
+            with self.assertLogs(level="ERROR"):
+                handle_telegram_commands(
+                    FakeClient(),
+                    object(),
+                    telegram,
+                    settings,
+                    {"telegramUpdateOffset": 55},
+                    "game1",
+                )
+
+        self.assertEqual(
+            telegram.messages,
+            ["관리자 권한을 확인하지 못했습니다. 잠시 후 다시 시도해주세요."],
+        )
+
+    def test_private_chat_and_anonymous_group_admin_are_allowed(self):
+        cases = [
+            {
+                "chat": {"id": "chat-a", "type": "private"},
+                "from": {"id": 100},
+            },
+            {
+                "chat": {"id": "-100group", "type": "supergroup"},
+                "from": {"id": 1087968824},
+                "sender_chat": {"id": "-100group"},
+            },
+        ]
+        for index, message_fields in enumerate(cases, start=60):
+            with self.subTest(message_fields=message_fields), TemporaryDirectory() as directory:
+                message = {**message_fields, "text": "/re"}
+                telegram = FakeCommandTelegram(
+                    [{"update_id": index, "message": message}]
+                )
+                settings = Settings(
+                    telegram_token="",
+                    telegram_chat_id="chat-a",
+                    telegram_chat_ids=("-100group",),
+                    dry_run=True,
+                    state_path=Path(directory) / "state.json",
+                )
+
+                handle_telegram_commands(
+                    FakeClient(),
+                    object(),
+                    telegram,
+                    settings,
+                    {"telegramUpdateOffset": index},
+                    None,
+                )
+
+                self.assertEqual(telegram.messages, ["오늘 확인된 KIA 경기가 없습니다."])
+                self.assertEqual(telegram.administrator_requests, [])
 
 
 class LineupDefenseDeliveryTest(unittest.TestCase):

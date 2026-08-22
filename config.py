@@ -30,10 +30,21 @@ def env_int(name: str, default: int) -> int:
     return int(value)
 
 
+def parse_telegram_chat_ids(*values: str | None) -> tuple[str, ...]:
+    chat_ids: list[str] = []
+    for value in values:
+        for chat_id in str(value or "").split(","):
+            normalized = chat_id.strip()
+            if normalized and normalized not in chat_ids:
+                chat_ids.append(normalized)
+    return tuple(chat_ids)
+
+
 @dataclass(frozen=True)
 class Settings:
     telegram_token: str
     telegram_chat_id: str
+    telegram_chat_ids: tuple[str, ...] = ()
     team_code: str = "HT"
     timezone: ZoneInfo = ZoneInfo("Asia/Seoul")
     poll_seconds: int = 5
@@ -47,20 +58,29 @@ class Settings:
     state_path: Path = BASE_DIR / "logs" / "state.json"
     log_path: Path = BASE_DIR / "logs" / "bot.log"
 
+    @property
+    def all_telegram_chat_ids(self) -> tuple[str, ...]:
+        return parse_telegram_chat_ids(self.telegram_chat_id, *self.telegram_chat_ids)
+
 
 def get_settings() -> Settings:
     load_dotenv()
 
     token = os.getenv("TELEGRAM_TOKEN", "")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-    if not token and not os.getenv("DRY_RUN"):
+    chat_ids = parse_telegram_chat_ids(
+        os.getenv("TELEGRAM_CHAT_ID"),
+        os.getenv("TELEGRAM_CHAT_IDS"),
+    )
+    dry_run = os.getenv("DRY_RUN", "").lower() in {"1", "true", "yes", "y"}
+    if not token and not dry_run:
         raise RuntimeError("TELEGRAM_TOKEN is required. Put it in .env.")
-    if not chat_id and not os.getenv("DRY_RUN"):
-        raise RuntimeError("TELEGRAM_CHAT_ID is required. Put it in .env.")
+    if not chat_ids and not dry_run:
+        raise RuntimeError("TELEGRAM_CHAT_ID or TELEGRAM_CHAT_IDS is required. Put it in .env.")
 
     return Settings(
         telegram_token=token,
-        telegram_chat_id=chat_id,
+        telegram_chat_id=chat_ids[0] if chat_ids else "",
+        telegram_chat_ids=chat_ids,
         team_code=os.getenv("TEAM_CODE", "HT"),
         poll_seconds=env_int("POLL_SECONDS", 5),
         idle_poll_seconds=env_int("IDLE_POLL_SECONDS", 300),
@@ -69,5 +89,5 @@ def get_settings() -> Settings:
         pregame_minutes=env_int("PREGAME_MINUTES", 60),
         postgame_minutes=env_int("POSTGAME_MINUTES", 30),
         naver_game_id=os.getenv("NAVER_GAME_ID") or None,
-        dry_run=os.getenv("DRY_RUN", "").lower() in {"1", "true", "yes", "y"},
+        dry_run=dry_run,
     )

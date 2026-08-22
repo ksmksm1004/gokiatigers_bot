@@ -89,8 +89,8 @@ BOT_COMMANDS = [
     ("/news", "KIA 주요 기사 확인"),
     ("/날씨", "오늘 KIA 경기 구장 날씨 확인"),
     ("/weather", "오늘 KIA 경기 구장 날씨 확인"),
-    ("/gg", "오늘 경기 중계 중단 후 종료 결과만 받기"),
-    ("/re", "중단한 오늘 경기 중계 재개"),
+    ("/gg", "관리자: 오늘 경기 중계 중단 후 종료 결과만 받기"),
+    ("/re", "관리자: 중단한 오늘 경기 중계 재개"),
     ("/도움말", "사용 가능한 명령어 보기"),
     ("/help", "사용 가능한 명령어 보기"),
 ]
@@ -108,8 +108,8 @@ TELEGRAM_MENU_COMMANDS = [
     ("/pitcherrecord", "KBO 투수 TOP 10·개인 기록"),
     ("/news", "KIA 주요 기사 확인"),
     ("/weather", "오늘 KIA 경기 구장 날씨"),
-    ("/gg", "오늘 경기 중계 중단"),
-    ("/re", "오늘 경기 중계 재개"),
+    ("/gg", "관리자: 오늘 경기 중계 중단"),
+    ("/re", "관리자: 오늘 경기 중계 재개"),
     ("/help", "사용 가능한 명령어 보기"),
 ]
 
@@ -767,9 +767,41 @@ def send_head_to_head_record(
     telegram.send_message(format_head_to_head_results(games, opponent_name, team_name))
 
 
-def send_record_options(telegram: TelegramBot, settings: Settings, state: dict[str, Any], record_type: str) -> None:
-    state["pendingRecordCommand"] = record_type
-    telegram.send_message(record_options_message(record_type), reply_markup=record_options_keyboard(record_type))
+def pending_record_command(state: dict[str, Any], chat_id: str) -> str:
+    pending = state.get("pendingRecordCommands") or {}
+    return str(pending.get(str(chat_id)) or "") if isinstance(pending, dict) else ""
+
+
+def set_pending_record_command(state: dict[str, Any], chat_id: str, record_type: str) -> None:
+    pending = state.get("pendingRecordCommands")
+    if not isinstance(pending, dict):
+        pending = {}
+    pending[str(chat_id)] = record_type
+    state["pendingRecordCommands"] = pending
+    state.pop("pendingRecordCommand", None)
+
+
+def clear_pending_record_command(state: dict[str, Any], chat_id: str) -> None:
+    pending = state.get("pendingRecordCommands")
+    if isinstance(pending, dict):
+        pending.pop(str(chat_id), None)
+        if not pending:
+            state.pop("pendingRecordCommands", None)
+    state.pop("pendingRecordCommand", None)
+
+
+def send_record_options(
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+    chat_id: str,
+    record_type: str,
+) -> None:
+    set_pending_record_command(state, chat_id, record_type)
+    telegram.send_message(
+        record_options_message(record_type),
+        reply_markup=record_options_keyboard(record_type),
+    )
     save_state(settings.state_path, state)
 
 
@@ -1636,6 +1668,34 @@ def _int_like(value: Any) -> int:
         return 0
 
 
+def relay_control_denial_message(telegram: TelegramBot, message: dict[str, Any]) -> str:
+    chat = message.get("chat") or {}
+    chat_id = str(chat.get("id") or "")
+    chat_type = str(chat.get("type") or "").lower()
+    if chat_type == "private" or (not chat_type and not chat_id.startswith("-")):
+        return ""
+
+    sender_chat = message.get("sender_chat") or {}
+    if str(sender_chat.get("id") or "") == chat_id:
+        return ""
+
+    user_id = str((message.get("from") or {}).get("id") or "")
+    if not user_id:
+        return "이 명령은 그룹 관리자만 사용할 수 있습니다."
+    try:
+        administrators = telegram.get_chat_administrators(chat_id)
+    except Exception:
+        logging.exception("Failed to check Telegram administrators for chat %s.", chat_id)
+        return "관리자 권한을 확인하지 못했습니다. 잠시 후 다시 시도해주세요."
+
+    for administrator in administrators:
+        status = str(administrator.get("status") or "").lower()
+        administrator_id = str((administrator.get("user") or {}).get("id") or "")
+        if administrator_id == user_id and status in {"creator", "administrator"}:
+            return ""
+    return "이 명령은 그룹 관리자만 사용할 수 있습니다."
+
+
 def handle_telegram_commands(
     client: NaverSportsClient,
     weather_client: NaverWeatherClient,
@@ -1654,48 +1714,53 @@ def handle_telegram_commands(
         save_state(settings.state_path, state)
         return
 
+    allowed_chat_ids = set(settings.all_telegram_chat_ids)
     for update in updates:
         state["telegramUpdateOffset"] = max(int(state.get("telegramUpdateOffset") or 0), int(update["update_id"]) + 1)
         callback = update.get("callback_query") or {}
         if callback:
             callback_message = callback.get("message") or {}
             callback_chat = callback_message.get("chat", {})
-            if str(callback_chat.get("id")) != str(settings.telegram_chat_id):
+            callback_chat_id = str(callback_chat.get("id") or "")
+            if callback_chat_id not in allowed_chat_ids:
                 continue
+            reply = telegram.for_chat(callback_chat_id)
             try:
                 data = str(callback.get("data") or "")
                 selected = option_from_callback_data(data)
                 if selected:
                     record_type, option = selected
-                    state.pop("pendingRecordCommand", None)
-                    telegram.answer_callback_query(str(callback.get("id") or ""))
-                    send_selected_record_stats(client, telegram, settings, record_type, option)
+                    clear_pending_record_command(state, callback_chat_id)
+                    reply.answer_callback_query(str(callback.get("id") or ""))
+                    send_selected_record_stats(client, reply, settings, record_type, option)
                     continue
 
                 selected_player = player_from_callback_data(data)
                 if selected_player:
                     record_type, player_id = selected_player
-                    state.pop("pendingRecordCommand", None)
-                    telegram.answer_callback_query(str(callback.get("id") or ""))
-                    send_player_record(KBOPlayerClient(), telegram, record_type, player_id)
+                    clear_pending_record_command(state, callback_chat_id)
+                    reply.answer_callback_query(str(callback.get("id") or ""))
+                    send_player_record(KBOPlayerClient(), reply, record_type, player_id)
                     continue
 
-                telegram.answer_callback_query(str(callback.get("id") or ""))
+                reply.answer_callback_query(str(callback.get("id") or ""))
                 continue
             except Exception:
                 logging.exception("Telegram callback failed: %s", callback.get("data"))
-                telegram.send_message("명령 처리 중 오류가 발생했습니다. logs/bot.log를 확인해주세요.")
+                reply.send_message("명령 처리 중 오류가 발생했습니다. logs/bot.log를 확인해주세요.")
                 continue
 
         message = update.get("message") or update.get("channel_post") or {}
         chat = message.get("chat", {})
-        if str(chat.get("id")) != str(settings.telegram_chat_id):
+        chat_id = str(chat.get("id") or "")
+        if chat_id not in allowed_chat_ids:
             continue
+        reply = telegram.for_chat(chat_id)
         text = str(message.get("text") or "").strip()
         command = text.split()[0].split("@")[0] if text else ""
         command_arg = text[len(text.split()[0]) :].strip() if text else ""
         try:
-            pending_record_type = state.get("pendingRecordCommand")
+            pending_record_type = pending_record_command(state, chat_id)
             if pending_record_type and command not in {
                 "/팀기록",
                 "/teamrecord",
@@ -1705,103 +1770,111 @@ def handle_telegram_commands(
                 "/pitcherrecord",
             }:
                 if command.startswith("/"):
-                    state.pop("pendingRecordCommand", None)
+                    clear_pending_record_command(state, chat_id)
                 else:
                     option = resolve_record_option(str(pending_record_type), text)
                     if option:
-                        state.pop("pendingRecordCommand", None)
-                        send_selected_record_stats(client, telegram, settings, str(pending_record_type), option)
+                        clear_pending_record_command(state, chat_id)
+                        send_selected_record_stats(client, reply, settings, str(pending_record_type), option)
                     else:
-                        telegram.send_message(record_options_message(str(pending_record_type)))
+                        reply.send_message(record_options_message(str(pending_record_type)))
                     continue
 
             if command in {"/라인업", "/lineup"}:
                 if not game_id:
-                    telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
+                    reply.send_message("오늘 확인된 KIA 경기가 없습니다.")
                     continue
-                send_lineup(client, telegram, game_id)
+                send_lineup(client, reply, game_id)
             elif command in {"/기록", "/record"}:
                 if not game_id:
-                    telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
+                    reply.send_message("오늘 확인된 KIA 경기가 없습니다.")
                     continue
-                send_kia_record(client, telegram, game_id, settings.team_code)
+                send_kia_record(client, reply, game_id, settings.team_code)
             elif command in {"/일정", "/schedule"}:
-                send_team_schedule(client, telegram, settings, datetime.now(settings.timezone))
+                send_team_schedule(client, reply, settings, datetime.now(settings.timezone))
             elif command in {"/스코어", "/score"}:
-                send_current_kbo_scores(client, telegram, settings)
+                send_current_kbo_scores(client, reply, settings)
             elif command in {"/상대전적", "/headtohead"}:
-                send_head_to_head_record(telegram, settings, command_arg)
+                send_head_to_head_record(reply, settings, command_arg)
             elif command in {"/순위", "/rank"}:
-                send_team_rankings(client, telegram, settings)
+                send_team_rankings(client, reply, settings)
             elif command in {"/월간성적", "/monthlyrecord"}:
-                send_monthly_team_records(client, telegram, settings)
+                send_monthly_team_records(client, reply, settings)
             elif command in {"/팀기록", "/teamrecord"}:
                 option = resolve_record_option("team", command_arg)
                 if option:
-                    state.pop("pendingRecordCommand", None)
-                    send_selected_record_stats(client, telegram, settings, "team", option)
+                    clear_pending_record_command(state, chat_id)
+                    send_selected_record_stats(client, reply, settings, "team", option)
                     continue
-                send_record_options(telegram, settings, state, "team")
+                send_record_options(reply, settings, state, chat_id, "team")
             elif command in {"/타자기록", "/hitterrecord"}:
                 option = resolve_record_option("hitter", command_arg)
                 if option:
-                    state.pop("pendingRecordCommand", None)
-                    send_selected_record_stats(client, telegram, settings, "hitter", option)
+                    clear_pending_record_command(state, chat_id)
+                    send_selected_record_stats(client, reply, settings, "hitter", option)
                     continue
                 if command_arg:
-                    state.pop("pendingRecordCommand", None)
-                    send_player_record_lookup(telegram, "hitter", command_arg)
+                    clear_pending_record_command(state, chat_id)
+                    send_player_record_lookup(reply, "hitter", command_arg)
                     continue
-                send_record_options(telegram, settings, state, "hitter")
+                send_record_options(reply, settings, state, chat_id, "hitter")
             elif command in {"/투수기록", "/pitcherrecord"}:
                 option = resolve_record_option("pitcher", command_arg)
                 if option:
-                    state.pop("pendingRecordCommand", None)
-                    send_selected_record_stats(client, telegram, settings, "pitcher", option)
+                    clear_pending_record_command(state, chat_id)
+                    send_selected_record_stats(client, reply, settings, "pitcher", option)
                     continue
                 if command_arg:
-                    state.pop("pendingRecordCommand", None)
-                    send_player_record_lookup(telegram, "pitcher", command_arg)
+                    clear_pending_record_command(state, chat_id)
+                    send_player_record_lookup(reply, "pitcher", command_arg)
                     continue
-                send_record_options(telegram, settings, state, "pitcher")
+                send_record_options(reply, settings, state, chat_id, "pitcher")
             elif command in {"/뉴스", "/news"}:
-                send_kia_news_command(client, telegram, settings, game_id)
+                send_kia_news_command(client, reply, settings, game_id)
             elif command in {"/날씨", "/weather"}:
                 if not game_id:
-                    telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
+                    reply.send_message("오늘 확인된 KIA 경기가 없습니다.")
                     continue
-                send_stadium_weather(client, weather_client, telegram, settings, state, game_id)
+                send_stadium_weather(client, weather_client, reply, settings, state, game_id)
             elif command == "/gg":
+                denial_message = relay_control_denial_message(reply, message)
+                if denial_message:
+                    reply.send_message(denial_message)
+                    continue
                 if not game_id:
-                    telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
+                    reply.send_message("오늘 확인된 KIA 경기가 없습니다.")
                     continue
                 summary, detail = command_game_detail(client, settings, state, game_id)
                 phase = command_game_phase(summary, detail, settings, datetime.now(settings.timezone))
                 if phase == "before":
-                    telegram.send_message("경기 시작 전입니다.")
+                    reply.send_message("경기 시작 전입니다.")
                     continue
                 if phase == "ended":
-                    telegram.send_message("경기가 끝났습니다.")
+                    reply.send_message("경기가 끝났습니다.")
                     continue
-                stop_relay_for_game(telegram, settings, state, game_id)
+                stop_relay_for_game(reply, settings, state, game_id)
             elif command == "/re":
+                denial_message = relay_control_denial_message(reply, message)
+                if denial_message:
+                    reply.send_message(denial_message)
+                    continue
                 if not game_id:
-                    telegram.send_message("오늘 확인된 KIA 경기가 없습니다.")
+                    reply.send_message("오늘 확인된 KIA 경기가 없습니다.")
                     continue
                 summary, detail = command_game_detail(client, settings, state, game_id)
                 phase = command_game_phase(summary, detail, settings, datetime.now(settings.timezone))
                 if phase == "before":
-                    telegram.send_message("경기 시작 전입니다.")
+                    reply.send_message("경기 시작 전입니다.")
                     continue
                 if phase == "ended":
-                    telegram.send_message("경기가 끝났습니다.")
+                    reply.send_message("경기가 끝났습니다.")
                     continue
-                resume_relay_for_game(client, telegram, settings, state, game_id)
+                resume_relay_for_game(client, reply, settings, state, game_id)
             elif command in {"/도움말", "/명령어", "/help", "/start"}:
-                telegram.send_message(command_help_message())
+                reply.send_message(command_help_message())
         except Exception:
             logging.exception("Telegram command failed: %s", command)
-            telegram.send_message("명령 처리 중 오류가 발생했습니다. logs/bot.log를 확인해주세요.")
+            reply.send_message("명령 처리 중 오류가 발생했습니다. logs/bot.log를 확인해주세요.")
 
     save_state(settings.state_path, state)
 
@@ -2358,7 +2431,7 @@ def main() -> None:
     setup_logging(settings)
     client = NaverSportsClient()
     weather_client = NaverWeatherClient()
-    telegram = TelegramBot(settings.telegram_token, settings.telegram_chat_id, settings.dry_run)
+    telegram = TelegramBot(settings.telegram_token, settings.all_telegram_chat_ids, settings.dry_run)
     state = load_state(settings.state_path)
 
     logging.info("KIA Telegram bot started. dry_run=%s", settings.dry_run)
@@ -2412,7 +2485,7 @@ def main() -> None:
                     "nextDailyRankingCheckAt": state.get("nextDailyRankingCheckAt"),
                     "nextPreviewCheckAt": state.get("nextPreviewCheckAt"),
                     "relayStoppedGameId": state.get("relayStoppedGameId"),
-                    "pendingRecordCommand": state.get("pendingRecordCommand"),
+                    "pendingRecordCommands": state.get("pendingRecordCommands"),
                     "kiaNewsGameId": state.get("kiaNewsGameId"),
                     "nextKiaNewsAt": state.get("nextKiaNewsAt"),
                     "kiaNewsSentGameId": state.get("kiaNewsSentGameId"),
