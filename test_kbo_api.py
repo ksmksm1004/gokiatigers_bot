@@ -1,13 +1,16 @@
 import unittest
 from datetime import date
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from kbo_api import (
     KBOGameResult,
     KBOPlayerClient,
     KBOPlayerRecord,
+    evaluate_achieved_milestones,
+    expected_records_for_team,
     format_head_to_head_results,
     format_player_record,
+    parse_expected_record_candidate,
     parse_schedule_results,
     parse_pitcher_season_hbp,
     parse_player_basic_page,
@@ -251,6 +254,119 @@ class KBOScheduleResultTest(unittest.TestCase):
             ),
         )
 
+
+class KBOExpectedRecordTest(unittest.TestCase):
+    def test_extracts_only_candidates_from_the_kia_row(self):
+        ocr_output = "\n".join(
+            [
+                "0.296000\t0.835000\t0.025000\t0.014000\t올러",
+                "0.072000\t0.802000\t0.044000\t0.014000\t8승 2패 0무",
+                "0.539000\t0.818000\t0.098000\t0.016000\t전상현 120홀드(-1) 12번째",
+                "0.148000\t0.792000\t0.094000\t0.016000\t36,000탈삼진(-5) 첫 번째",
+                "0.295000\t0.758000\t0.025000\t0.014000\t안우진",
+                "0.072000\t0.727000\t0.044000\t0.014000\t2승 8패 0무",
+                "0.539000\t0.740000\t0.098000\t0.016000\t서건창 500안타(-1) 100번째",
+            ]
+        )
+
+        found, candidates = expected_records_for_team(ocr_output, ["올러"])
+
+        self.assertTrue(found)
+        self.assertEqual(
+            [(item.subject, item.achievement, str(item.remaining)) for item in candidates],
+            [("전상현", "120홀드", "1"), ("", "36,000탈삼진", "5")],
+        )
+
+    def test_does_not_use_a_starter_name_found_outside_the_starter_column(self):
+        ocr_output = "\n".join(
+            [
+                "0.700000\t0.835000\t0.040000\t0.014000\t올러(1.06)",
+                "0.072000\t0.802000\t0.044000\t0.014000\t5승 5패 0무",
+                "0.539000\t0.818000\t0.098000\t0.016000\t다른선수 100안타(-1) 100번째",
+            ]
+        )
+
+        found, candidates = expected_records_for_team(ocr_output, ["올러"])
+
+        self.assertFalse(found)
+        self.assertEqual(candidates, [])
+
+    def test_resolves_daily_view_links_relative_to_the_expectation_directory(self):
+        list_response = Mock(
+            text=(
+                '<a href="DailyView.aspx?bdSe=2990">'
+                "금일 예상 달성 기록(20260822) - 18시 고척</a>"
+            )
+        )
+        view_response = Mock(
+            text=(
+                '<a href="/Common/FileDownload.ashx?file=expected_20260822.png">'
+                "expected.png</a>"
+            )
+        )
+        image_response = Mock(content=b"image")
+        client = KBOPlayerClient()
+        client._request = Mock(side_effect=[list_response, view_response, image_response])
+        ocr_output = "\n".join(
+            [
+                "0.296000\t0.835000\t0.025000\t0.014000\t올러",
+                "0.072000\t0.802000\t0.044000\t0.014000\t8승 2패 0무",
+                "0.148000\t0.792000\t0.094000\t0.016000\t36,000탈삼진(-5) 첫 번째",
+            ]
+        )
+
+        with patch("kbo_api.recognize_kbo_expected_record_image", return_value=ocr_output):
+            candidates = client.expected_record_candidates(date(2026, 8, 22), "올러")
+
+        self.assertEqual([item.achievement for item in candidates], ["36,000탈삼진"])
+        self.assertEqual(
+            client._request.call_args_list[1].args[1],
+            "https://www.koreabaseball.com/Record/Expectation/DailyView.aspx?bdSe=2990",
+        )
+
+    def test_accepts_fractional_innings_and_an_ocr_dropped_minus_sign(self):
+        innings = parse_expected_record_candidate(
+            "양현종 13시즌 연속 100이닝(-4 1/3) 2번째"
+        )
+        runs = parse_expected_record_candidate("나성범 1,100득점(1) 16번째")
+
+        self.assertEqual(str(innings.remaining), "13/3")
+        self.assertEqual(innings.stat, "innings")
+        self.assertEqual(str(runs.remaining), "1")
+        self.assertEqual(runs.stat, "runs")
+
+    def test_validates_candidates_against_the_finished_game_boxscore(self):
+        team_candidate = parse_expected_record_candidate("36,000탈삼진(-5) 첫 번째")
+        hold_candidate = parse_expected_record_candidate("전상현 120홀드(-1) 12번째")
+        record = {
+            "gameInfo": {"aCode": "HT", "hCode": "WO"},
+            "battersBoxscore": {
+                "away": [],
+                "awayTotal": {"run": 1},
+                "homeTotal": {"run": 3},
+            },
+            "teamPitchingBoxscore": {"away": {"kk": 9, "inn": "8"}},
+            "pitchersBoxscore": {
+                "away": [{"pcode": "61395", "name": "전상현", "inn": "1", "wls": ""}]
+            },
+            "pitchingResult": [],
+        }
+
+        messages = evaluate_achieved_milestones(
+            record,
+            [team_candidate, hold_candidate],
+            "HT",
+        )
+
+        self.assertEqual(messages, ["KIA 타이거즈 KBO 최초 팀 36,000 탈삼진"])
+
+        record["pitchingResult"] = [{"pCode": "61395", "name": "전상현", "wls": "H"}]
+        messages = evaluate_achieved_milestones(
+            record,
+            [team_candidate, hold_candidate],
+            "HT",
+        )
+        self.assertIn("전상현 KBO 역대 12번째 120홀드", messages)
 
 if __name__ == "__main__":
     unittest.main()

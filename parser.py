@@ -984,7 +984,11 @@ def _plate_result_label(event: RelayEvent | None, player: dict[str, Any]) -> str
     return label
 
 
-def format_kia_record(record: dict[str, Any], team_code: str = KIA_CODE) -> str:
+def format_kia_record(
+    record: dict[str, Any],
+    team_code: str = KIA_CODE,
+    milestones: list[str] | None = None,
+) -> str:
     info = record.get("gameInfo", {})
     side = "home" if info.get("hCode") == team_code else "away"
     team_name = info.get("hName" if side == "home" else "aName", "KIA")
@@ -1014,6 +1018,9 @@ def format_kia_record(record: dict[str, Any], team_code: str = KIA_CODE) -> str:
         decision = _pitching_decision(player) or _pitching_result_for_player(record, player)
         result = f" {decision}" if decision else ""
         lines.append(f"{player.get('name', '-')}{result} | {_pitcher_stats_text(player)}")
+
+    if milestones:
+        lines += ["", "오늘의 기록", *milestones]
 
     return "\n".join(lines)
 

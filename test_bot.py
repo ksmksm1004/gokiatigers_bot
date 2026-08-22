@@ -1342,6 +1342,128 @@ class FinalScoreTest(unittest.TestCase):
         self.assertIn("세이브: 정해영", joined)
         self.assertIn("홀드: 전상현", joined)
 
+    def test_appends_verified_milestones_to_the_end_of_the_kia_boxscore(self):
+        record = {
+            "gameInfo": {"aName": "KIA", "hName": "키움", "aCode": "HT", "hCode": "WO"},
+            "battersBoxscore": {
+                "awayTotal": {"run": 1, "hit": 8},
+                "homeTotal": {"run": 3},
+                "away": [],
+                "home": [],
+            },
+            "teamPitchingBoxscore": {"away": {"inn": "8", "kk": 9}},
+            "pitchersBoxscore": {
+                "away": [{"name": "올러", "wls": "패"}],
+                "home": [{"name": "안우진", "wls": "승"}],
+            },
+        }
+        milestone = "KIA 타이거즈 KBO 최초 팀 36,000 탈삼진"
+        kbo_client = SimpleNamespace(game_milestones=lambda _record, _team_code: [milestone])
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            state = {}
+            telegram = FakeTelegram()
+            send_game_end_record_once(
+                FakeClient(record),
+                telegram,
+                settings,
+                state,
+                "20260822HTWO02026",
+                "KIA",
+                "키움",
+                1,
+                3,
+                kbo_client,
+            )
+
+        boxscore = next(message for message in telegram.messages if "KIA 경기 기록" in message)
+        self.assertTrue(boxscore.endswith(f"오늘의 기록\n{milestone}"))
+        self.assertEqual(state["gameMilestones"]["sent"], [milestone])
+
+    def test_sends_only_a_new_milestone_when_a_pitching_decision_arrives_late(self):
+        record = {
+            "gameInfo": {"aName": "KIA", "hName": "키움", "aCode": "HT", "hCode": "WO"},
+            "battersBoxscore": {
+                "awayTotal": {"run": 1},
+                "homeTotal": {"run": 3},
+                "away": [],
+                "home": [],
+            },
+            "teamPitchingBoxscore": {"away": {"inn": "8", "kk": 9}},
+            "pitchersBoxscore": {
+                "away": [
+                    {"name": "올러", "wls": ""},
+                    {"name": "전상현", "wls": ""},
+                ],
+                "home": [{"name": "안우진", "wls": ""}],
+            },
+            "pitchingResult": [],
+        }
+        team_milestone = "KIA 타이거즈 KBO 최초 팀 36,000 탈삼진"
+        hold_milestone = "전상현 KBO 역대 12번째 120홀드"
+
+        def milestones(current_record, _team_code):
+            values = [team_milestone]
+            if any(
+                item.get("name") == "전상현" and item.get("wls") == "H"
+                for item in current_record["pitchingResult"]
+            ):
+                values.append(hold_milestone)
+            return values
+
+        kbo_client = SimpleNamespace(game_milestones=milestones)
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            state = {}
+            telegram = FakeTelegram()
+            client = FakeClient(record)
+            send_game_end_record_once(
+                client,
+                telegram,
+                settings,
+                state,
+                "20260822HTWO02026",
+                "KIA",
+                "키움",
+                1,
+                3,
+                kbo_client,
+            )
+            record["pitchingResult"] = [
+                {"name": "안우진", "wls": "W"},
+                {"name": "올러", "wls": "L"},
+                {"name": "전상현", "wls": "H"},
+            ]
+            send_game_end_record_once(
+                client,
+                telegram,
+                settings,
+                state,
+                "20260822HTWO02026",
+                "KIA",
+                "키움",
+                1,
+                3,
+                kbo_client,
+            )
+
+        self.assertEqual(telegram.messages[-1], f"오늘의 기록\n{hold_milestone}")
+        self.assertNotIn(team_milestone, telegram.messages[-1])
+        self.assertEqual(state["gameMilestones"]["sent"], [team_milestone, hold_milestone])
+
     def test_pitching_decisions_use_pitching_result_when_boxscore_wls_is_empty(self):
         record = {
             "gameInfo": {"aName": "한화", "hName": "KIA", "aCode": "HH", "hCode": "HT"},

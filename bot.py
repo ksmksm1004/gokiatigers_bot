@@ -1889,6 +1889,7 @@ def send_game_end_record_once(
     home_name: str,
     away_score: int,
     home_score: int,
+    kbo_client: KBOPlayerClient | None = None,
 ) -> bool:
     if state.get("pitchingDecisionsSentGameId") == game_id:
         return True
@@ -1904,7 +1905,17 @@ def send_game_end_record_once(
         if not decisions_ready:
             logging.info("Pitching decisions are not ready for %s. Will retry later.", game_id)
             return True
+        milestones = new_game_milestones(
+            kbo_client,
+            record,
+            settings.team_code,
+            state,
+            game_id,
+        )
         telegram.send_message(format_pitching_decision_update(record))
+        if milestones:
+            telegram.send_message(format_today_milestones(milestones))
+            mark_game_milestones_sent(state, game_id, milestones)
         state["pitchingDecisionsSentGameId"] = game_id
         save_state(settings.state_path, state)
         return True
@@ -1912,7 +1923,16 @@ def send_game_end_record_once(
     if highlights:
         telegram.send_message(highlights)
     telegram.send_message(decisions)
-    telegram.send_message(format_kia_record(record, settings.team_code))
+    milestones = new_game_milestones(
+        kbo_client,
+        record,
+        settings.team_code,
+        state,
+        game_id,
+    )
+    telegram.send_message(format_kia_record(record, settings.team_code, milestones))
+    if milestones:
+        mark_game_milestones_sent(state, game_id, milestones)
     state["recordSentGameId"] = game_id
     if decisions_ready:
         state["pitchingDecisionsSentGameId"] = game_id
@@ -1921,6 +1941,54 @@ def send_game_end_record_once(
     if not decisions_ready:
         logging.info("Pitching decisions are not ready for %s. Will retry later.", game_id)
     return True
+
+
+def new_game_milestones(
+    kbo_client: KBOPlayerClient | None,
+    record: dict[str, Any],
+    team_code: str,
+    state: dict[str, Any],
+    game_id: str,
+) -> list[str]:
+    if kbo_client is None:
+        return []
+    try:
+        milestones = kbo_client.game_milestones(record, team_code)
+    except Exception:
+        logging.exception(
+            "KBO milestone lookup failed for %s. Sending the box score without it.",
+            game_id,
+        )
+        return []
+
+    milestone_state = state.get("gameMilestones") or {}
+    sent = (
+        set(milestone_state.get("sent") or [])
+        if milestone_state.get("gameId") == game_id
+        else set()
+    )
+    return [milestone for milestone in milestones if milestone not in sent]
+
+
+def mark_game_milestones_sent(
+    state: dict[str, Any],
+    game_id: str,
+    milestones: list[str],
+) -> None:
+    milestone_state = state.get("gameMilestones") or {}
+    sent = (
+        list(milestone_state.get("sent") or [])
+        if milestone_state.get("gameId") == game_id
+        else []
+    )
+    for milestone in milestones:
+        if milestone not in sent:
+            sent.append(milestone)
+    state["gameMilestones"] = {"gameId": game_id, "sent": sent}
+
+
+def format_today_milestones(milestones: list[str]) -> str:
+    return "\n".join(["오늘의 기록", *milestones])
 
 
 def schedule_kia_news_after_game(settings: Settings, state: dict[str, Any], game_id: str) -> None:
@@ -2198,6 +2266,7 @@ def finish_stopped_relay_game_if_done(
     summary,
     detailed_game: dict[str, Any],
     now: datetime,
+    kbo_client: KBOPlayerClient | None = None,
 ) -> bool:
     if state.get("relayStoppedGameId") != summary.game_id:
         return False
@@ -2219,6 +2288,7 @@ def finish_stopped_relay_game_if_done(
             summary.home_name or "홈",
             away_score,
             home_score,
+            kbo_client,
         )
         if not record_sent:
             send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
@@ -2237,6 +2307,7 @@ def finish_stopped_relay_game_if_done(
             summary.home_name or "홈",
             score_from_game(detailed_game, "away") or int(state.get("awayScore") or 0),
             score_from_game(detailed_game, "home") or int(state.get("homeScore") or 0),
+            kbo_client,
         )
     send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
     return True
@@ -2430,6 +2501,7 @@ def main() -> None:
     settings = get_settings()
     setup_logging(settings)
     client = NaverSportsClient()
+    kbo_client = KBOPlayerClient()
     weather_client = NaverWeatherClient()
     telegram = TelegramBot(settings.telegram_token, settings.all_telegram_chat_ids, settings.dry_run)
     state = load_state(settings.state_path)
@@ -2580,6 +2652,7 @@ def main() -> None:
                     summary,
                     detailed_game,
                     now,
+                    kbo_client,
                 )
                 if handled:
                     sleep_seconds = (
@@ -2613,6 +2686,7 @@ def main() -> None:
                     summary.home_name or "홈",
                     int(state.get("awayScore") or 0),
                     int(state.get("homeScore") or 0),
+                    kbo_client,
                 )
                 if not record_sent:
                     sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.idle_poll_seconds)
@@ -2639,6 +2713,7 @@ def main() -> None:
                         summary.home_name or "홈",
                         int(state.get("awayScore") or 0),
                         int(state.get("homeScore") or 0),
+                        kbo_client,
                     )
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                 sleep_seconds = seconds_until_next_due(

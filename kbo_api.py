@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import re
+import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from fractions import Fraction
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
@@ -15,6 +22,7 @@ import requests
 KBO_BASE_URL = "https://www.koreabaseball.com/"
 KBO_PLAYER_SEARCH_URL = urljoin(KBO_BASE_URL, "ws/Controls.asmx/GetSearchPlayer")
 KBO_SCHEDULE_URL = urljoin(KBO_BASE_URL, "ws/Schedule.asmx/GetScheduleList")
+KBO_EXPECTED_RECORD_LIST_URL = urljoin(KBO_BASE_URL, "Record/Expectation/DailyList.aspx")
 
 
 @dataclass(frozen=True)
@@ -51,6 +59,29 @@ class KBOGameResult:
     away_score: int
     home_score: int
     home_team: str
+
+
+@dataclass(frozen=True)
+class KBOExpectedRecord:
+    subject: str
+    achievement: str
+    remaining: Fraction
+    rank: str
+    stat: str
+    raw_text: str
+
+
+@dataclass(frozen=True)
+class KBOOCRLine:
+    x: float
+    y: float
+    width: float
+    height: float
+    text: str
+
+    @property
+    def mid_y(self) -> float:
+        return self.y + self.height / 2
 
 
 @dataclass
@@ -168,9 +199,49 @@ class _FragmentTextParser(HTMLParser):
             self.parts.append(value)
 
 
+class _ExpectedRecordListParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.entries: list[tuple[str, str]] = []
+        self._href = ""
+        self._text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "a":
+            return
+        href = str(dict(attrs).get("href") or "")
+        if "DailyView.aspx" in href:
+            self._href = href
+            self._text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._href:
+            self._text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._href:
+            self.entries.append((self._href, _clean_text("".join(self._text))))
+            self._href = ""
+            self._text = []
+
+
+class _ExpectedRecordViewParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.image_href = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "a" or self.image_href:
+            return
+        href = str(dict(attrs).get("href") or "")
+        if "FileDownload.ashx" in href and ".png" in href.lower():
+            self.image_href = href
+
+
 class KBOPlayerClient:
     def __init__(self) -> None:
         self.session = requests.Session()
+        self._expected_record_cache: dict[tuple[date, str], list[KBOExpectedRecord]] = {}
         self.session.headers.update(
             {
                 "User-Agent": (
@@ -219,6 +290,52 @@ class KBOPlayerClient:
         )
         return parse_schedule_results(response.json(), season)
 
+    def game_milestones(self, record: dict[str, Any], team_code: str = "HT") -> list[str]:
+        info = record.get("gameInfo") or {}
+        game_date = _game_date(info.get("gdate"))
+        side = "home" if str(info.get("hCode") or "") == team_code else "away"
+        pitchers = record.get("pitchersBoxscore", {}).get(side, [])
+        starter_name = str((pitchers[0] if pitchers else {}).get("name") or "").strip()
+        if game_date is None or not starter_name:
+            return []
+
+        candidates = self.expected_record_candidates(game_date, starter_name)
+        return evaluate_achieved_milestones(record, candidates, team_code)
+
+    def expected_record_candidates(
+        self,
+        game_date: date,
+        starter_name: str,
+    ) -> list[KBOExpectedRecord]:
+        cache_key = (game_date, _normalize_name(starter_name))
+        if cache_key in self._expected_record_cache:
+            return self._expected_record_cache[cache_key]
+
+        response = self._request("get", KBO_EXPECTED_RECORD_LIST_URL)
+        list_parser = _ExpectedRecordListParser()
+        list_parser.feed(_prepare_kbo_html(response.text))
+        date_token = game_date.strftime("%Y%m%d")
+        entries = [entry for entry in list_parser.entries if date_token in entry[1]]
+
+        for view_href, _title in entries:
+            view_response = self._request("get", urljoin(KBO_EXPECTED_RECORD_LIST_URL, view_href))
+            view_parser = _ExpectedRecordViewParser()
+            view_parser.feed(_prepare_kbo_html(view_response.text))
+            if not view_parser.image_href:
+                continue
+            image_response = self._request(
+                "get",
+                urljoin(KBO_BASE_URL, view_parser.image_href),
+            )
+            ocr_output = recognize_kbo_expected_record_image(image_response.content)
+            found, candidates = expected_records_for_team(ocr_output, [starter_name])
+            if found:
+                self._expected_record_cache[cache_key] = candidates
+                return candidates
+
+        self._expected_record_cache[cache_key] = []
+        return []
+
     def _request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         for attempt in range(3):
             try:
@@ -237,6 +354,447 @@ class KBOPlayerClient:
                 logging.warning("KBO request failed for %s. Retrying.", url)
                 time.sleep(0.5 * (2**attempt))
         raise RuntimeError(f"KBO request failed: {url}")
+
+
+_EXPECTED_STAT_ALIASES = (
+    ("경기출장", "games"),
+    ("탈삼진", "strikeouts"),
+    ("세이브", "saves"),
+    ("홀드", "holds"),
+    ("4사구", "walk_hbp"),
+    ("사사구", "walk_hbp"),
+    ("2루타", "doubles"),
+    ("3루타", "triples"),
+    ("홈런", "home_runs"),
+    ("타점", "rbi"),
+    ("득점", "runs"),
+    ("도루", "stolen_bases"),
+    ("안타", "hits"),
+    ("루타", "total_bases"),
+    ("타석", "plate_appearances"),
+    ("타수", "at_bats"),
+    ("4구", "walks"),
+    ("볼넷", "walks"),
+    ("이닝", "innings"),
+    ("승리", "wins"),
+    ("패전", "losses"),
+    ("승", "wins"),
+    ("패", "losses"),
+)
+
+
+def recognize_kbo_expected_record_image(image: bytes) -> str:
+    if sys.platform != "darwin":
+        raise RuntimeError("KBO expected-record OCR requires macOS Vision")
+    executable = _kbo_ocr_executable()
+    with tempfile.NamedTemporaryFile(suffix=".png") as image_file:
+        image_file.write(image)
+        image_file.flush()
+        completed = subprocess.run(
+            [str(executable), image_file.name],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=45,
+        )
+    return completed.stdout
+
+
+def _kbo_ocr_executable() -> Path:
+    source = Path(__file__).with_name("kbo_record_ocr.m")
+    if not source.exists():
+        raise RuntimeError(f"KBO OCR source is missing: {source}")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()[:12]
+    executable = Path(tempfile.gettempdir()) / f"gokiatigers-kbo-record-ocr-{digest}"
+    if executable.exists() and os.access(executable, os.X_OK):
+        return executable
+
+    temporary = executable.with_name(f"{executable.name}.{os.getpid()}")
+    module_cache = Path(tempfile.gettempdir()) / "gokiatigers-clang-module-cache"
+    module_cache.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    environment["CLANG_MODULE_CACHE_PATH"] = str(module_cache)
+    try:
+        subprocess.run(
+            [
+                "/usr/bin/clang",
+                "-O2",
+                "-fobjc-arc",
+                "-fblocks",
+                "-framework",
+                "Foundation",
+                "-framework",
+                "AppKit",
+                "-framework",
+                "Vision",
+                str(source),
+                "-o",
+                str(temporary),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            env=environment,
+        )
+        temporary.replace(executable)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return executable
+
+
+def parse_kbo_ocr_lines(output: str) -> list[KBOOCRLine]:
+    lines: list[KBOOCRLine] = []
+    for raw_line in output.splitlines():
+        parts = raw_line.split("\t", 4)
+        if len(parts) != 5:
+            continue
+        try:
+            x, y, width, height = (float(value) for value in parts[:4])
+        except ValueError:
+            continue
+        text = _clean_text(parts[4])
+        if text:
+            lines.append(KBOOCRLine(x, y, width, height, text))
+    return lines
+
+
+def parse_expected_record_candidate(text: str) -> KBOExpectedRecord | None:
+    normalized = _clean_text(text).replace("−", "-")
+    match = re.fullmatch(
+        r"(?P<body>.+?)\(\s*-?\s*(?P<remaining>\d+(?:\.\d+)?(?:\s+\d+/\d+)?)\s*\)\s*"
+        r"(?P<rank>첫\s*번째|\d+\s*번째)",
+        normalized,
+    )
+    if not match:
+        return None
+
+    body = match.group("body").strip().lstrip("★*# ")
+    body = re.sub(r"(?<=\d)\.\s+(?=4(?:구|사구))", " ", body)
+    if re.match(r"^(?:KIA(?:\s*타이거즈)?\s+)?\d", body, re.IGNORECASE):
+        subject = ""
+        achievement = re.sub(r"^KIA(?:\s*타이거즈)?\s+", "", body, flags=re.IGNORECASE)
+    else:
+        parts = body.split(" ", 1)
+        if len(parts) != 2:
+            return None
+        subject = parts[0].lstrip("★*#")
+        achievement = parts[1]
+
+    stat = _expected_record_stat(achievement)
+    remaining = _parse_fraction(match.group("remaining"))
+    if not stat or remaining is None or remaining <= 0:
+        return None
+    return KBOExpectedRecord(
+        subject=subject,
+        achievement=achievement,
+        remaining=remaining,
+        rank=_clean_text(match.group("rank")),
+        stat=stat,
+        raw_text=normalized,
+    )
+
+
+def expected_records_for_team(
+    ocr_output: str,
+    anchor_names: list[str],
+) -> tuple[bool, list[KBOExpectedRecord]]:
+    lines = parse_kbo_ocr_lines(ocr_output)
+    anchor = _find_team_anchor(lines, anchor_names)
+    if anchor is None:
+        return False, []
+
+    team_rows = [
+        line
+        for line in lines
+        if re.fullmatch(r"\d+승\d+패\d+무", "".join(line.text.split()))
+    ]
+    if team_rows:
+        target_row = min(team_rows, key=lambda line: abs(line.mid_y - anchor.mid_y))
+        ordered_rows = sorted(team_rows, key=lambda line: line.mid_y, reverse=True)
+        index = ordered_rows.index(target_row)
+        upper = (
+            (ordered_rows[index - 1].mid_y + target_row.mid_y) / 2
+            if index > 0
+            else target_row.mid_y + 0.055
+        ) + 0.008
+        lower = (
+            (ordered_rows[index + 1].mid_y + target_row.mid_y) / 2
+            if index + 1 < len(ordered_rows)
+            else target_row.mid_y - 0.055
+        ) - 0.008
+    else:
+        upper = anchor.mid_y + 0.055
+        lower = anchor.mid_y - 0.055
+
+    candidates: list[KBOExpectedRecord] = []
+    seen: set[str] = set()
+    for line in lines:
+        if not lower <= line.mid_y <= upper:
+            continue
+        candidate = parse_expected_record_candidate(line.text)
+        if candidate is None or candidate.raw_text in seen:
+            continue
+        seen.add(candidate.raw_text)
+        candidates.append(candidate)
+    return True, candidates
+
+
+def evaluate_achieved_milestones(
+    record: dict[str, Any],
+    candidates: list[KBOExpectedRecord],
+    team_code: str = "HT",
+) -> list[str]:
+    messages: list[str] = []
+    for candidate in candidates:
+        increment = _game_record_increment(record, candidate, team_code)
+        if increment < candidate.remaining:
+            continue
+        message = format_achieved_milestone(candidate)
+        if message not in messages:
+            messages.append(message)
+    return messages
+
+
+def format_achieved_milestone(candidate: KBOExpectedRecord) -> str:
+    rank = "".join(candidate.rank.split())
+    if candidate.subject:
+        order = "KBO 최초" if rank == "첫번째" else f"KBO 역대 {rank}"
+        return f"{candidate.subject} {order} {candidate.achievement}"
+
+    achievement = candidate.achievement
+    for label, _stat in sorted(_EXPECTED_STAT_ALIASES, key=lambda item: len(item[0]), reverse=True):
+        achievement = re.sub(rf"(?<=\d)(?={re.escape(label)})", " ", achievement)
+    order = "KBO 최초" if rank == "첫번째" else f"KBO 역대 {rank}"
+    return f"KIA 타이거즈 {order} 팀 {achievement}"
+
+
+def _find_team_anchor(lines: list[KBOOCRLine], names: list[str]) -> KBOOCRLine | None:
+    for index, name in enumerate(names):
+        normalized_name = _normalize_name(name)
+        if not normalized_name:
+            continue
+        matches = [
+            line
+            for line in lines
+            if normalized_name in _normalize_name(line.text) and line.x < 0.88
+        ]
+        if not matches:
+            continue
+        if index == 0:
+            starter_column = [line for line in matches if 0.24 <= line.x <= 0.36]
+            if starter_column:
+                return min(starter_column, key=lambda line: len(line.text))
+            continue
+        return min(matches, key=lambda line: len(line.text))
+    return None
+
+
+def _expected_record_stat(achievement: str) -> str:
+    matches: list[tuple[int, int, str]] = []
+    for label, stat in _EXPECTED_STAT_ALIASES:
+        for match in re.finditer(re.escape(label), achievement):
+            matches.append((match.end(), len(label), stat))
+    return max(matches, default=(-1, -1, ""))[2]
+
+
+def _game_record_increment(
+    record: dict[str, Any],
+    candidate: KBOExpectedRecord,
+    team_code: str,
+) -> Fraction:
+    info = record.get("gameInfo") or {}
+    side = "home" if str(info.get("hCode") or "") == team_code else "away"
+    batters = record.get("battersBoxscore", {}).get(side, [])
+    pitchers = record.get("pitchersBoxscore", {}).get(side, [])
+
+    if not candidate.subject:
+        return _team_stat_increment(record, side, candidate.stat)
+
+    normalized_subject = _normalize_name(candidate.subject)
+    batter = next(
+        (player for player in batters if _normalize_name(player.get("name", "")) == normalized_subject),
+        None,
+    )
+    pitcher = next(
+        (player for player in pitchers if _normalize_name(player.get("name", "")) == normalized_subject),
+        None,
+    )
+    if pitcher is not None and candidate.stat in {
+        "strikeouts",
+        "innings",
+        "wins",
+        "losses",
+        "saves",
+        "holds",
+    }:
+        return _pitcher_stat_increment(record, pitcher, candidate.stat)
+    if batter is not None:
+        return _batter_stat_increment(batter, candidate.stat)
+    if pitcher is not None and candidate.stat == "games":
+        return Fraction(1)
+    return Fraction(0)
+
+
+def _team_stat_increment(record: dict[str, Any], side: str, stat: str) -> Fraction:
+    batter_box = record.get("battersBoxscore", {})
+    batters = batter_box.get(side, [])
+    batting = batter_box.get(f"{side}Total", {})
+    pitching = record.get("teamPitchingBoxscore", {}).get(side, {})
+    if stat == "strikeouts":
+        return _fraction_from_value(pitching.get("kk") or pitching.get("so"))
+    if stat == "innings":
+        return _innings_fraction(pitching.get("inn"))
+    if stat == "total_bases":
+        return sum((_batter_stat_increment(player, stat) for player in batters), Fraction(0))
+    if stat == "walk_hbp":
+        return sum((_batter_stat_increment(player, stat) for player in batters), Fraction(0))
+    if stat in {"wins", "losses"}:
+        away_runs = _to_int_or_none(batter_box.get("awayTotal", {}).get("run")) or 0
+        home_runs = _to_int_or_none(batter_box.get("homeTotal", {}).get("run")) or 0
+        won = (side == "away" and away_runs > home_runs) or (side == "home" and home_runs > away_runs)
+        lost = away_runs != home_runs and not won
+        return Fraction(int(won if stat == "wins" else lost))
+    if stat in {"saves", "holds"}:
+        pitchers = record.get("pitchersBoxscore", {}).get(side, [])
+        return sum((_pitcher_stat_increment(record, player, stat) for player in pitchers), Fraction(0))
+
+    fields = {
+        "games": None,
+        "plate_appearances": "pa",
+        "at_bats": "ab",
+        "hits": "hit",
+        "home_runs": "hr",
+        "rbi": "rbi",
+        "runs": "run",
+        "stolen_bases": "sb",
+        "walks": "bb",
+    }
+    if stat == "games":
+        return Fraction(1)
+    field = fields.get(stat)
+    if field:
+        return _fraction_from_value(batting.get(field))
+    if stat in {"doubles", "triples"}:
+        return sum((_batter_stat_increment(player, stat) for player in batters), Fraction(0))
+    return Fraction(0)
+
+
+def _batter_stat_increment(player: dict[str, Any], stat: str) -> Fraction:
+    results = _batter_results(player)
+    doubles = sum(1 for result in results if "2루타" in result or re.search(r"[좌우중]+2$", result))
+    triples = sum(1 for result in results if "3루타" in result or re.search(r"[좌우중]+3$", result))
+    hit_by_pitch = sum(1 for result in results if "사구" in result or "몸에 맞" in result)
+    values = {
+        "games": 1,
+        "plate_appearances": player.get("pa"),
+        "at_bats": player.get("ab"),
+        "hits": player.get("hit"),
+        "doubles": doubles,
+        "triples": triples,
+        "home_runs": player.get("hr"),
+        "rbi": player.get("rbi"),
+        "runs": player.get("run"),
+        "stolen_bases": player.get("sb"),
+        "walks": player.get("bb"),
+        "walk_hbp": (_to_int_or_none(player.get("bb")) or 0) + hit_by_pitch,
+    }
+    if stat == "total_bases":
+        hits = _to_int_or_none(player.get("hit")) or 0
+        home_runs = _to_int_or_none(player.get("hr")) or 0
+        return Fraction(hits + doubles + 2 * triples + 3 * home_runs)
+    return _fraction_from_value(values.get(stat))
+
+
+def _pitcher_stat_increment(
+    record: dict[str, Any],
+    player: dict[str, Any],
+    stat: str,
+) -> Fraction:
+    if stat == "games":
+        return Fraction(1)
+    if stat == "strikeouts":
+        return _fraction_from_value(player.get("kk") or player.get("so"))
+    if stat == "innings":
+        return _innings_fraction(player.get("inn"))
+    decision = _pitching_decision(record, player)
+    expected = {"wins": "승", "losses": "패", "saves": "세", "holds": "홀"}.get(stat)
+    return Fraction(int(bool(expected and decision == expected)))
+
+
+def _pitching_decision(record: dict[str, Any], player: dict[str, Any]) -> str:
+    player_code = str(player.get("pcode") or player.get("pCode") or "")
+    player_name = _normalize_name(player.get("name", ""))
+    rows = [player, *(record.get("pitchingResult") or [])]
+    for row in rows:
+        row_code = str(row.get("pcode") or row.get("pCode") or "")
+        row_name = _normalize_name(row.get("name", ""))
+        if row is not player and not (
+            (player_code and player_code == row_code) or (player_name and player_name == row_name)
+        ):
+            continue
+        for key in ("wls", "result", "winLoseSave", "wlsName"):
+            value = str(row.get(key) or "").strip().upper()
+            if value in {"승", "W", "WIN", "승리"}:
+                return "승"
+            if value in {"패", "L", "LOSE", "LOSS", "패전"}:
+                return "패"
+            if value in {"세", "S", "SAVE", "세이브"}:
+                return "세"
+            if value in {"홀", "H", "HOLD", "홀드"}:
+                return "홀"
+    return ""
+
+
+def _batter_results(player: dict[str, Any]) -> list[str]:
+    return [
+        str(player.get(f"inn{inning}") or "").strip()
+        for inning in range(1, 26)
+        if str(player.get(f"inn{inning}") or "").strip()
+    ]
+
+
+def _parse_fraction(value: Any) -> Fraction | None:
+    raw = str(value or "").strip().replace("⅓", "1/3").replace("⅔", "2/3")
+    if not raw:
+        return None
+    try:
+        if " " in raw:
+            whole, fraction = raw.split(None, 1)
+            return Fraction(whole) + Fraction(fraction)
+        return Fraction(raw)
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def _fraction_from_value(value: Any) -> Fraction:
+    parsed = _parse_fraction(value)
+    return parsed if parsed is not None else Fraction(0)
+
+
+def _innings_fraction(value: Any) -> Fraction:
+    raw = str(value or "").strip()
+    mixed = _parse_fraction(raw)
+    if " " in raw or "/" in raw or "⅓" in raw or "⅔" in raw:
+        return mixed if mixed is not None else Fraction(0)
+    if "." in raw:
+        whole, outs = raw.split(".", 1)
+        if outs[:1] in {"1", "2"}:
+            try:
+                return Fraction(int(whole) * 3 + int(outs[:1]), 3)
+            except ValueError:
+                return Fraction(0)
+    return mixed if mixed is not None else Fraction(0)
+
+
+def _game_date(value: Any) -> date | None:
+    try:
+        return datetime.strptime(str(value), "%Y%m%d").date()
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_player_candidates(
