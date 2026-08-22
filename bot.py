@@ -65,34 +65,21 @@ from youtube import find_tving_kia_highlight
 
 
 BOT_COMMANDS = [
-    ("/라인업", "오늘 KIA 경기 선발 라인업 확인"),
-    ("/lineup", "오늘 KIA 경기 선발 라인업 확인"),
-    ("/일정", "KIA 향후 경기 일정 확인"),
-    ("/schedule", "KIA 향후 경기 일정 확인"),
-    ("/스코어", "오늘 KBO 전체 경기 현재 스코어 확인"),
-    ("/score", "오늘 KBO 전체 경기 현재 스코어 확인"),
-    ("/상대전적", "KIA 상대 팀별 시즌 전적 확인"),
-    ("/headtohead", "KIA 상대 팀별 시즌 전적 확인"),
-    ("/기록", "오늘 KIA 경기 기록 확인"),
-    ("/record", "오늘 KIA 경기 기록 확인"),
-    ("/순위", "KBO 팀 순위 확인"),
-    ("/rank", "KBO 팀 순위 확인"),
-    ("/월간성적", "이번 달 KBO 팀 성적 확인"),
-    ("/monthlyrecord", "이번 달 KBO 팀 성적 확인"),
-    ("/팀기록", "KBO 팀 주요 기록 확인"),
-    ("/teamrecord", "KBO 팀 주요 기록 확인"),
-    ("/타자기록", "KBO 타자 TOP 10·개인 기록 확인"),
-    ("/hitterrecord", "KBO 타자 TOP 10·개인 기록 확인"),
-    ("/투수기록", "KBO 투수 TOP 10·개인 기록 확인"),
-    ("/pitcherrecord", "KBO 투수 TOP 10·개인 기록 확인"),
-    ("/뉴스", "KIA 주요 기사 확인"),
-    ("/news", "KIA 주요 기사 확인"),
-    ("/날씨", "오늘 KIA 경기 구장 날씨 확인"),
-    ("/weather", "오늘 KIA 경기 구장 날씨 확인"),
-    ("/gg", "관리자: 오늘 경기 중계 중단 후 종료 결과만 받기"),
-    ("/re", "관리자: 중단한 오늘 경기 중계 재개"),
-    ("/도움말", "사용 가능한 명령어 보기"),
-    ("/help", "사용 가능한 명령어 보기"),
+    (("/라인업", "/lineup"), "오늘 KIA 경기 선발 라인업 확인"),
+    (("/일정", "/schedule"), "KIA 향후 경기 일정 확인"),
+    (("/스코어", "/score"), "오늘 KBO 전체 경기 현재 스코어 확인"),
+    (("/상대전적", "/headtohead"), "KIA 상대 팀별 시즌 전적 확인"),
+    (("/기록", "/record"), "오늘 KIA 경기 기록 확인"),
+    (("/순위", "/rank"), "KBO 팀 순위 확인"),
+    (("/월간성적", "/monthlyrecord"), "이번 달 KBO 팀 성적 확인"),
+    (("/팀기록", "/teamrecord"), "KBO 팀 주요 기록 확인"),
+    (("/타자기록", "/hitterrecord"), "KBO 타자 TOP 10·개인 기록 확인"),
+    (("/투수기록", "/pitcherrecord"), "KBO 투수 TOP 10·개인 기록 확인"),
+    (("/뉴스", "/news"), "KIA 주요 기사 확인"),
+    (("/날씨", "/weather"), "오늘 KIA 경기 구장 날씨 확인"),
+    (("/gg",), "관리자: 오늘 경기 중계 중단 후 종료 결과만 받기"),
+    (("/re",), "관리자: 중단한 오늘 경기 중계 재개"),
+    (("/도움말", "/help"), "사용 가능한 명령어 보기"),
 ]
 
 TELEGRAM_MENU_COMMANDS = [
@@ -1146,7 +1133,9 @@ def send_stadium_weather(
 
 def command_help_message() -> str:
     lines = ["사용 가능한 명령어"]
-    lines.extend(f"{command} - {description}" for command, description in BOT_COMMANDS)
+    for commands, description in BOT_COMMANDS:
+        aliases = f" ({', '.join(commands[1:])})" if len(commands) > 1 else ""
+        lines.append(f"{commands[0]}{aliases} - {description}")
     return "\n".join(lines)
 
 

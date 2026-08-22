@@ -173,7 +173,11 @@ class MultiChatCommandTest(unittest.TestCase):
             )
 
         self.assertEqual(telegram.message_chat_ids, ["chat-b"])
-        self.assertTrue(telegram.messages[0].startswith("사용 가능한 명령어"))
+        help_message = telegram.messages[0]
+        self.assertTrue(help_message.startswith("사용 가능한 명령어"))
+        self.assertIn("/라인업 (/lineup) - 오늘 KIA 경기 선발 라인업 확인", help_message)
+        self.assertIn("/도움말 (/help) - 사용 가능한 명령어 보기", help_message)
+        self.assertEqual(help_message.count("오늘 KIA 경기 선발 라인업 확인"), 1)
 
     @patch("bot.send_selected_record_stats")
     def test_pending_record_selection_is_isolated_by_chat(self, send_stats):
