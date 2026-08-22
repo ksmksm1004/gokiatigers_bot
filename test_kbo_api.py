@@ -10,6 +10,7 @@ from kbo_api import (
     expected_records_for_team,
     format_head_to_head_results,
     format_player_record,
+    format_recent_series_results,
     parse_expected_record_candidate,
     parse_schedule_results,
     parse_pitcher_season_hbp,
@@ -250,6 +251,50 @@ class KBOScheduleResultTest(unittest.TestCase):
                     "4/14 2:6 승",
                     "6/1 3:3 무",
                     "7/24 8:5 패",
+                ]
+            ),
+        )
+
+    def test_formats_the_four_most_recent_opponent_series(self):
+        games = [
+            KBOGameResult(date(2026, 8, 8), "KIA", 5, 2, "LG"),
+            KBOGameResult(date(2026, 8, 11), "삼성", 1, 3, "KIA"),
+            KBOGameResult(date(2026, 8, 12), "삼성", 2, 7, "KIA"),
+            KBOGameResult(date(2026, 8, 13), "삼성", 9, 8, "KIA"),
+            KBOGameResult(date(2026, 8, 14), "두산", 10, 4, "KIA"),
+            KBOGameResult(date(2026, 8, 15), "두산", 1, 6, "KIA"),
+            KBOGameResult(date(2026, 8, 16), "두산", 1, 2, "KIA"),
+            KBOGameResult(date(2026, 8, 18), "KIA", 4, 3, "한화"),
+            KBOGameResult(date(2026, 8, 19), "KIA", 6, 3, "한화"),
+            KBOGameResult(date(2026, 8, 20), "KIA", 10, 6, "한화"),
+            KBOGameResult(date(2026, 8, 21), "KIA", 11, 1, "키움"),
+            KBOGameResult(date(2026, 8, 22), "KIA", 1, 3, "키움"),
+        ]
+
+        self.assertEqual(
+            format_recent_series_results(games),
+            "\n".join(
+                [
+                    "KIA 최근 경기",
+                    "",
+                    "vs 삼성",
+                    "8/11 1:3 승",
+                    "8/12 2:7 승",
+                    "8/13 9:8 패",
+                    "",
+                    "vs 두산",
+                    "8/14 10:4 패",
+                    "8/15 1:6 승",
+                    "8/16 1:2 승",
+                    "",
+                    "vs 한화",
+                    "8/18 4:3 승",
+                    "8/19 6:3 승",
+                    "8/20 10:6 승",
+                    "",
+                    "vs 키움",
+                    "8/21 11:1 승",
+                    "8/22 1:3 패",
                 ]
             ),
         )

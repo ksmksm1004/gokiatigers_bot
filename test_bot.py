@@ -35,6 +35,7 @@ from bot import (
     send_kia_news_command,
     send_monthly_team_records,
     send_player_record_lookup,
+    send_recent_games,
     with_state_plate_totals,
 )
 from config import Settings
@@ -176,7 +177,11 @@ class MultiChatCommandTest(unittest.TestCase):
         help_message = telegram.messages[0]
         self.assertTrue(help_message.startswith("사용 가능한 명령어"))
         self.assertIn("/라인업 (/lineup) - 오늘 KIA 경기 선발 라인업 확인", help_message)
-        self.assertIn("/도움말 (/help) - 사용 가능한 명령어 보기", help_message)
+        self.assertIn("/최근경기 (/recentgames) - KIA 최근 4개 시리즈 결과 확인", help_message)
+        self.assertIn(
+            "/도움말 (/명령어, /help, /start) - 사용 가능한 명령어 보기",
+            help_message,
+        )
         self.assertEqual(help_message.count("오늘 KIA 경기 선발 라인업 확인"), 1)
 
     @patch("bot.send_selected_record_stats")
@@ -710,6 +715,59 @@ class HeadToHeadCommandTest(unittest.TestCase):
             )
 
         send_record.assert_called_once_with(telegram, settings, "키움")
+
+
+class RecentGamesCommandTest(unittest.TestCase):
+    def test_sends_the_four_latest_series(self):
+        class ScheduleClient:
+            def __init__(self):
+                self.calls = []
+
+            def team_schedule_results(self, season, team_id):
+                self.calls.append((season, team_id))
+                return [
+                    KBOGameResult(date(2026, 8, 18), "KIA", 4, 3, "한화"),
+                    KBOGameResult(date(2026, 8, 21), "KIA", 11, 1, "키움"),
+                ]
+
+        client = ScheduleClient()
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+
+        send_recent_games(
+            telegram,
+            settings,
+            client,
+            datetime(2026, 8, 23, tzinfo=settings.timezone),
+        )
+
+        self.assertEqual(client.calls, [(2026, "HT")])
+        self.assertIn("KIA 최근 경기", telegram.messages[0])
+        self.assertIn("vs 한화\n8/18 4:3 승", telegram.messages[0])
+        self.assertIn("vs 키움\n8/21 11:1 승", telegram.messages[0])
+
+    @patch("bot.send_recent_games")
+    def test_korean_command_routes_to_recent_games(self, send_recent):
+        telegram = FakeCommandTelegram(
+            [{"update_id": 13, "message": {"chat": {"id": "chat"}, "text": "/최근경기"}}]
+        )
+        with TemporaryDirectory() as directory:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="chat",
+                dry_run=True,
+                state_path=Path(directory) / "state.json",
+            )
+            handle_telegram_commands(
+                FakeClient(),
+                object(),
+                telegram,
+                settings,
+                {"telegramUpdateOffset": 13},
+                None,
+            )
+
+        send_recent.assert_called_once_with(telegram, settings)
 
 
 class PitchingChangePhotoTest(unittest.TestCase):

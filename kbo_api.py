@@ -892,16 +892,12 @@ def format_head_to_head_results(
     wins = draws = losses = 0
     rows: list[str] = []
     for game in selected:
-        team_score = game.away_score if game.away_team == team_name else game.home_score
-        opponent_score = game.home_score if game.away_team == team_name else game.away_score
-        if team_score > opponent_score:
-            result = "승"
+        result = _game_result_for_team(game, team_name)
+        if result == "승":
             wins += 1
-        elif team_score < opponent_score:
-            result = "패"
+        elif result == "패":
             losses += 1
         else:
-            result = "무"
             draws += 1
         rows.append(
             f"{game.game_date.month}/{game.game_date.day} "
@@ -918,6 +914,48 @@ def format_head_to_head_results(
     else:
         lines += ["", "아직 완료된 경기가 없습니다."]
     return "\n".join(lines)
+
+
+def format_recent_series_results(
+    games: list[KBOGameResult],
+    team_name: str = "KIA",
+    max_series: int = 4,
+) -> str:
+    series: list[dict[str, Any]] = []
+    selected = sorted(
+        (game for game in games if team_name in {game.away_team, game.home_team}),
+        key=lambda game: game.game_date,
+    )
+    for game in selected:
+        opponent = game.home_team if game.away_team == team_name else game.away_team
+        if series and series[-1]["opponent"] == opponent:
+            series[-1]["games"].append(game)
+        else:
+            series.append({"opponent": opponent, "games": [game]})
+
+    lines = [f"{team_name} 최근 경기"]
+    recent = series[-max(0, max_series) :] if max_series > 0 else []
+    if not recent:
+        return "\n\n".join([lines[0], "완료된 경기가 없습니다."])
+
+    for group in recent:
+        lines += ["", f"vs {group['opponent']}"]
+        for game in group["games"]:
+            lines.append(
+                f"{game.game_date.month}/{game.game_date.day} "
+                f"{game.away_score}:{game.home_score} {_game_result_for_team(game, team_name)}"
+            )
+    return "\n".join(lines)
+
+
+def _game_result_for_team(game: KBOGameResult, team_name: str) -> str:
+    team_score = game.away_score if game.away_team == team_name else game.home_score
+    opponent_score = game.home_score if game.away_team == team_name else game.away_score
+    if team_score > opponent_score:
+        return "승"
+    if team_score < opponent_score:
+        return "패"
+    return "무"
 
 
 def parse_player_basic_page(html: str, player_id: str, record_type: str) -> KBOPlayerRecord:

@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from config import Settings, get_settings
-from kbo_api import KBOPlayerCandidate, KBOPlayerClient, format_head_to_head_results, format_player_record
+from kbo_api import (
+    KBOPlayerCandidate,
+    KBOPlayerClient,
+    format_head_to_head_results,
+    format_player_record,
+    format_recent_series_results,
+)
 from lineup_image import render_defensive_lineup_image
 from naver_api import NaverSportsClient, unwrap
 from naver_weather import NaverWeatherClient
@@ -67,6 +73,7 @@ from youtube import find_tving_kia_highlight
 BOT_COMMANDS = [
     (("/라인업", "/lineup"), "오늘 KIA 경기 선발 라인업 확인"),
     (("/일정", "/schedule"), "KIA 향후 경기 일정 확인"),
+    (("/최근경기", "/recentgames"), "KIA 최근 4개 시리즈 결과 확인"),
     (("/스코어", "/score"), "오늘 KBO 전체 경기 현재 스코어 확인"),
     (("/상대전적", "/headtohead"), "KIA 상대 팀별 시즌 전적 확인"),
     (("/기록", "/record"), "오늘 KIA 경기 기록 확인"),
@@ -79,12 +86,13 @@ BOT_COMMANDS = [
     (("/날씨", "/weather"), "오늘 KIA 경기 구장 날씨 확인"),
     (("/gg",), "관리자: 오늘 경기 중계 중단 후 종료 결과만 받기"),
     (("/re",), "관리자: 중단한 오늘 경기 중계 재개"),
-    (("/도움말", "/help"), "사용 가능한 명령어 보기"),
+    (("/도움말", "/명령어", "/help", "/start"), "사용 가능한 명령어 보기"),
 ]
 
 TELEGRAM_MENU_COMMANDS = [
     ("/lineup", "오늘 KIA 경기 선발 라인업 확인"),
     ("/schedule", "KIA 향후 경기 일정 확인"),
+    ("/recentgames", "KIA 최근 4개 시리즈 결과"),
     ("/score", "오늘 KBO 전체 경기 현재 스코어"),
     ("/headtohead", "KIA 상대 팀별 시즌 전적 확인"),
     ("/record", "오늘 KIA 경기 기록 확인"),
@@ -752,6 +760,21 @@ def send_head_to_head_record(
     games = (kbo_client or KBOPlayerClient()).team_schedule_results(current.year, settings.team_code)
     team_name = TEAM_NAMES.get(settings.team_code, settings.team_code)
     telegram.send_message(format_head_to_head_results(games, opponent_name, team_name))
+
+
+def send_recent_games(
+    telegram: TelegramBot,
+    settings: Settings,
+    kbo_client: KBOPlayerClient | None = None,
+    now: datetime | None = None,
+) -> None:
+    current = now or datetime.now(settings.timezone)
+    games = (kbo_client or KBOPlayerClient()).team_schedule_results(
+        current.year,
+        settings.team_code,
+    )
+    team_name = TEAM_NAMES.get(settings.team_code, settings.team_code)
+    telegram.send_message(format_recent_series_results(games, team_name, max_series=4))
 
 
 def pending_record_command(state: dict[str, Any], chat_id: str) -> str:
@@ -1781,6 +1804,8 @@ def handle_telegram_commands(
                 send_kia_record(client, reply, game_id, settings.team_code)
             elif command in {"/일정", "/schedule"}:
                 send_team_schedule(client, reply, settings, datetime.now(settings.timezone))
+            elif command in {"/최근경기", "/recentgames"}:
+                send_recent_games(reply, settings)
             elif command in {"/스코어", "/score"}:
                 send_current_kbo_scores(client, reply, settings)
             elif command in {"/상대전적", "/headtohead"}:
