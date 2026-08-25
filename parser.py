@@ -645,9 +645,11 @@ def kia_half_summary_message(
         return ""
 
     side = "home" if half == "말" else "away"
-    lineup = active_lineup(relay, side)
+    lineup_key = "homeLineup" if side == "home" else "awayLineup"
+    lineup = relay.get(lineup_key, {}).get("batter", [])
+    active_batters = active_lineup(relay, side)
     lineup_by_code = {str(player.get("pcode")): player for player in lineup}
-    lineup_by_order = {_to_int(player.get("batOrder")): player for player in lineup}
+    active_by_order = {_to_int(player.get("batOrder")): player for player in active_batters}
     out_results = half_out_results(events, inning, half)
     stranded_runners = half_stranded_runners(events, inning, half)
     stranded_by_order: dict[int, list[int]] = {}
@@ -658,7 +660,7 @@ def kia_half_summary_message(
         if event.inning == inning and event.half == half and event.batter_code and event.batter_code not in used_codes:
             used_codes.append(event.batter_code)
     for batting_order in stranded_by_order:
-        player = lineup_by_order.get(batting_order)
+        player = active_by_order.get(batting_order)
         code = str((player or {}).get("pcode") or "")
         if code and code not in used_codes:
             used_codes.append(code)
@@ -680,12 +682,57 @@ def kia_half_summary_message(
                 if (result.player_code and result.player_code == str(code))
                 or (result.player_name and result.player_name == player_name)
             ]
-            stranded_bases = stranded_by_order.get(_to_int(player.get("batOrder")), [])
+            batting_order = _to_int(player.get("batOrder"))
+            active_player = active_by_order.get(batting_order)
+            active_code = str((active_player or {}).get("pcode") or "")
+            stranded_bases = (
+                stranded_by_order.get(batting_order, [])
+                if active_code == str(code)
+                else []
+            )
             if stranded_bases:
                 result_labels.append(_stranded_runner_label(stranded_bases))
             if result_labels:
                 line += f" | {' '.join(result_labels)}"
             lines.append(line)
+    if pitcher_lines:
+        lines += ["", *pitcher_lines]
+    return "\n".join(lines)
+
+
+def opponent_half_summary_message(
+    events: list[RelayEvent],
+    finished_by_event: RelayEvent,
+    home_code: str,
+    away_code: str,
+    away_name: str,
+    home_name: str,
+    team_code: str = KIA_CODE,
+    pitcher_lines: list[str] | None = None,
+) -> str:
+    previous_half = _previous_half(finished_by_event)
+    if previous_half is None:
+        return ""
+    inning, half = previous_half
+    probe = RelayEvent(
+        event_id=0,
+        inning=inning,
+        half=half,
+        text="",
+        home_score=finished_by_event.home_score,
+        away_score=finished_by_event.away_score,
+        home_or_away="1" if half == "말" else "0",
+    )
+    if not is_kia_pitching(probe, home_code, away_code, team_code):
+        return ""
+
+    labels = previous_half_result_labels(events, finished_by_event)
+    lines = [
+        f"{batting_team_name(probe, home_name, away_name)} 공격 종료 | {inning}회{half}",
+        f"{away_name} {finished_by_event.away_score} : {finished_by_event.home_score} {home_name}",
+    ]
+    if labels:
+        lines.append(" ".join(labels))
     if pitcher_lines:
         lines += ["", *pitcher_lines]
     return "\n".join(lines)

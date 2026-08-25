@@ -20,7 +20,6 @@ from lineup_image import render_defensive_lineup_image
 from naver_api import NaverSportsClient, unwrap
 from naver_weather import NaverWeatherClient
 from parser import (
-    changed_pitcher_lines,
     current_player_record,
     expected_batters_message,
     find_previous_plate_event,
@@ -51,6 +50,7 @@ from parser import (
     is_kia_batter_event,
     is_kia_pitching,
     kia_half_summary_message,
+    opponent_half_summary_message,
     lineup_media_items,
     parse_game_summary,
     parse_relay_events,
@@ -60,7 +60,6 @@ from parser import (
     player_photo_url,
     pitcher_photo_url,
     previous_half_pitcher_lines,
-    previous_half_result_labels,
     record_options_message,
     resolve_record_option,
     should_send_relay_event,
@@ -1419,17 +1418,53 @@ def dispatch_relay_events(
             remember_plate_score(state, event)
 
         if event.is_attack_start:
-            pitcher_lines = []
-            previous_half_labels = []
-            if is_kia_batting(event, home_code, away_code, settings.team_code):
-                side = "home" if event.home_or_away == "1" else "away"
-                pitcher_lines, current_snapshot = changed_pitcher_lines(
-                    relay,
-                    side,
-                    state.get("lastKiaPitcherSnapshot"),
-                )
-                state["lastKiaPitcherSnapshot"] = current_snapshot
-                previous_half_labels = previous_half_result_labels(all_events, event)
+            summary_key = half_key(event)
+            if summary_key not in sent_summaries:
+                if is_kia_batting(event, home_code, away_code, settings.team_code):
+                    kia_pitching_side = "home" if home_code == settings.team_code else "away"
+                    kia_pitcher_lines = previous_half_pitcher_lines(
+                        all_events,
+                        relay,
+                        event,
+                        kia_pitching_side,
+                    )
+                    summary = opponent_half_summary_message(
+                        all_events,
+                        event,
+                        home_code,
+                        away_code,
+                        away_name,
+                        home_name,
+                        settings.team_code,
+                        kia_pitcher_lines,
+                    )
+                else:
+                    opponent_pitcher_lines = []
+                    context = opponent_pitching_context(home_code, away_code, settings.team_code)
+                    if context:
+                        pitching_side, opponent_code = context
+                        opponent_pitcher_lines = previous_half_pitcher_lines(
+                            all_events,
+                            relay,
+                            event,
+                            pitching_side,
+                            TEAM_PITCHER_LABELS.get(opponent_code, opponent_code),
+                        )
+                    summary = kia_half_summary_message(
+                        all_events,
+                        relay,
+                        event,
+                        home_code,
+                        away_code,
+                        away_name,
+                        home_name,
+                        settings.team_code,
+                        opponent_pitcher_lines,
+                    )
+                if summary:
+                    telegram.send_message(summary)
+                    sent_summaries.add(summary_key)
+
             expected = expected_batters_message(
                 event,
                 relay,
@@ -1438,39 +1473,9 @@ def dispatch_relay_events(
                 away_name,
                 home_name,
                 settings.team_code,
-                pitcher_lines,
-                previous_half_labels,
             )
             if expected:
                 telegram.send_message(expected)
-
-            summary_key = half_key(event)
-            if summary_key not in sent_summaries:
-                opponent_pitcher_lines = []
-                context = opponent_pitching_context(home_code, away_code, settings.team_code)
-                if context and is_kia_pitching(event, home_code, away_code, settings.team_code):
-                    pitching_side, opponent_code = context
-                    opponent_pitcher_lines = previous_half_pitcher_lines(
-                        all_events,
-                        relay,
-                        event,
-                        pitching_side,
-                        TEAM_PITCHER_LABELS.get(opponent_code, opponent_code),
-                    )
-                summary = kia_half_summary_message(
-                    all_events,
-                    relay,
-                    event,
-                    home_code,
-                    away_code,
-                    away_name,
-                    home_name,
-                    settings.team_code,
-                    opponent_pitcher_lines,
-                )
-                if summary:
-                    telegram.send_message(summary)
-                    sent_summaries.add(summary_key)
             continue
 
         if not should_send_relay_event(event, home_code, away_code, settings.team_code):

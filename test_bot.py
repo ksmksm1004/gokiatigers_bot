@@ -1815,6 +1815,117 @@ class TeamScheduleTest(unittest.TestCase):
 
 
 class KiaHalfSummaryTest(unittest.TestCase):
+    def test_opponent_half_summary_is_sent_before_clean_kia_attack_start(self):
+        events = [
+            RelayEvent(
+                1,
+                9,
+                "초",
+                "김민석 : 희생번트 아웃",
+                4,
+                5,
+                current_state={"out": "1", "pitcher": "1", "base1": "8"},
+            ),
+            RelayEvent(
+                2,
+                9,
+                "초",
+                "고승민 : 중견수 플라이 아웃",
+                4,
+                5,
+                current_state={"out": "2", "pitcher": "1", "base1": "8"},
+            ),
+            RelayEvent(
+                3,
+                9,
+                "초",
+                "3루주자 윤동희 : 태그아웃",
+                4,
+                5,
+                current_state={"out": "3", "pitcher": "1", "base1": "8"},
+            ),
+            RelayEvent(
+                4,
+                9,
+                "말",
+                "9회말 KIA 공격",
+                4,
+                5,
+                batter_code="3",
+                home_or_away="1",
+                current_state={"out": "0", "batter": "3"},
+            ),
+        ]
+        relay = {
+            "homeLineup": {
+                "batter": [
+                    {"pcode": "3", "name": "김도영", "batOrder": 3, "seasonHra": "0.304", "ab": 3, "hit": 2},
+                    {"pcode": "4", "name": "나성범", "batOrder": 4, "seasonHra": "0.294", "ab": 4, "hit": 2},
+                    {"pcode": "5", "name": "정현창", "batOrder": 5, "seasonHra": "0.147", "ab": 0, "hit": 0},
+                ],
+                "pitcher": [
+                    {
+                        "pcode": "1",
+                        "name": "조상우",
+                        "seqno": 1,
+                        "ballCount": 11,
+                        "inn": "1.0",
+                        "hit": 2,
+                        "run": 0,
+                        "er": 0,
+                        "bb": 0,
+                        "hbp": 0,
+                        "kk": 0,
+                        "seasonEra": "2.58",
+                    }
+                ],
+            }
+        }
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+
+        sent_summaries = dispatch_relay_events(
+            telegram,
+            settings,
+            {},
+            relay,
+            events,
+            [events[-1]],
+            set(),
+            "롯데",
+            "KIA",
+            "LT",
+            "HT",
+        )
+
+        self.assertEqual(len(telegram.messages), 2)
+        self.assertEqual(
+            telegram.messages[0],
+            "\n".join(
+                [
+                    "롯데 공격 종료 | 9회초",
+                    "롯데 5 : 4 KIA",
+                    "희생번트1 플라이2 태그3 잔루1",
+                    "",
+                    "조상우 | 11개 | 1이닝 2피안타 0실점 0자책 0사사구 0삼진 ERA 2.58",
+                ]
+            ),
+        )
+        self.assertEqual(
+            telegram.messages[1],
+            "\n".join(
+                [
+                    "KIA 공격 시작 | 9회말",
+                    "롯데 5 : 4 KIA",
+                    "KIA 예상 타자",
+                    "3 김도영 | .304 | 2-3",
+                    "4 나성범 | .294 | 2-4",
+                    "5 정현창 | .147 | 0-0",
+                ]
+            ),
+        )
+        self.assertEqual(sent_summaries, {"9말"})
+
     def test_away_kia_half_summary_includes_opponent_pitcher_stats(self):
         events = [
             RelayEvent(
@@ -2038,8 +2149,20 @@ class KiaHalfSummaryTest(unittest.TestCase):
                 "HH",
             )
 
-        self.assertEqual(len(telegram.messages), 1)
-        self.assertIn("KIA 3 : 2 한화 (삼진1 포스2 플라이3 잔루1)", telegram.messages[0])
+        self.assertEqual(len(telegram.messages), 2)
+        self.assertEqual(
+            telegram.messages[0],
+            "\n".join(
+                [
+                    "한화 공격 종료 | 6회말",
+                    "KIA 3 : 2 한화",
+                    "삼진1 포스2 플라이3 잔루1",
+                ]
+            ),
+        )
+        self.assertIn("KIA 공격 시작 | 7회초", telegram.messages[1])
+        self.assertIn("KIA 3 : 2 한화", telegram.messages[1])
+        self.assertNotIn("(삼진1 포스2 플라이3 잔루1)", telegram.messages[1])
 
     def test_process_relay_loads_previous_inning_for_home_kia_summary(self):
         current_relay = {

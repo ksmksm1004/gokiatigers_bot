@@ -18,6 +18,7 @@ from parser import (
     kia_half_summary_message,
     kia_news_articles,
     lineup_media_items,
+    opponent_half_summary_message,
     parse_relay_events,
     plate_result_history,
     player_image_url,
@@ -342,6 +343,62 @@ class HalfOutSummaryTest(unittest.TestCase):
 
         self.assertEqual(labels, ["삼진1", "포스2", "플라이3", "잔루123"])
 
+    def test_opponent_half_summary_contains_results_and_kia_pitcher(self):
+        events = [
+            RelayEvent(
+                1,
+                9,
+                "초",
+                "김민석 : 희생번트 아웃",
+                4,
+                5,
+                current_state={"out": "1", "pitcher": "1", "base1": "8"},
+            ),
+            RelayEvent(
+                2,
+                9,
+                "초",
+                "고승민 : 중견수 플라이 아웃",
+                4,
+                5,
+                current_state={"out": "2", "pitcher": "1", "base1": "8"},
+            ),
+            RelayEvent(
+                3,
+                9,
+                "초",
+                "3루주자 윤동희 : 태그아웃",
+                4,
+                5,
+                current_state={"out": "3", "pitcher": "1", "base1": "8"},
+            ),
+        ]
+        attack_start = RelayEvent(4, 9, "말", "9회말 KIA 공격", 4, 5, home_or_away="1")
+
+        message = opponent_half_summary_message(
+            events,
+            attack_start,
+            "HT",
+            "LT",
+            "롯데",
+            "KIA",
+            "HT",
+            ["조상우 | 11개 | 1이닝 2피안타 0실점 0자책 0사사구 0삼진 ERA 2.58"],
+        )
+
+        self.assertEqual(
+            message,
+            "\n".join(
+                [
+                    "롯데 공격 종료 | 9회초",
+                    "롯데 5 : 4 KIA",
+                    "희생번트1 플라이2 태그3 잔루1",
+                    "",
+                    "조상우 | 11개 | 1이닝 2피안타 0실점 0자책 0사사구 0삼진 ERA 2.58",
+                ]
+            ),
+        )
+
     def test_previous_half_pitcher_lines_include_every_pitcher_with_team_label(self):
         events = [
             RelayEvent(
@@ -519,6 +576,101 @@ class HalfOutSummaryTest(unittest.TestCase):
 
         self.assertIn("4 카스트로 | .348 | 2타수 1안타 2타점 | 잔루1", message)
         self.assertIn("5 나성범 | .292 | 3타수 1안타 2타점 1삼진 | 삼진1", message)
+
+    def test_kia_half_summary_keeps_a_batter_replaced_by_a_pinch_runner(self):
+        events = [
+            RelayEvent(
+                392,
+                7,
+                "말",
+                "김선빈 : 볼넷",
+                4,
+                5,
+                batter_code="78603",
+                player_name="김선빈",
+                current_state={"out": "0", "base1": "5"},
+            ),
+            RelayEvent(
+                401,
+                7,
+                "말",
+                "김호령 : 우익수 플라이 아웃",
+                4,
+                5,
+                batter_code="65653",
+                player_name="김호령",
+                current_state={"out": "1", "base1": "5"},
+            ),
+            RelayEvent(
+                405,
+                7,
+                "말",
+                "김태군 : 투수 병살타 아웃",
+                4,
+                5,
+                batter_code="78122",
+                player_name="김태군",
+                current_state={"out": "3", "base1": "0"},
+            ),
+        ]
+        finished_by = RelayEvent(407, 8, "초", "8회초 롯데 공격", 4, 5, home_or_away="0")
+        relay = {
+            "homeLineup": {
+                "batter": [
+                    {
+                        "pcode": "78603",
+                        "name": "김선빈",
+                        "batOrder": 5,
+                        "seqno": 1,
+                        "cout": "true",
+                        "seasonHra": "0.276",
+                        "ab": 3,
+                        "hit": 1,
+                        "rbi": 1,
+                        "bb": 1,
+                    },
+                    {
+                        "pcode": "55926",
+                        "name": "정현창",
+                        "batOrder": 5,
+                        "seqno": 2,
+                        "seasonHra": "0.147",
+                        "ab": 0,
+                    },
+                    {
+                        "pcode": "65653",
+                        "name": "김호령",
+                        "batOrder": 6,
+                        "seqno": 1,
+                        "seasonHra": "0.268",
+                        "ab": 1,
+                    },
+                    {
+                        "pcode": "78122",
+                        "name": "김태군",
+                        "batOrder": 7,
+                        "seqno": 1,
+                        "seasonHra": "0.292",
+                        "ab": 2,
+                    },
+                ]
+            }
+        }
+
+        message = kia_half_summary_message(
+            events,
+            relay,
+            finished_by,
+            "HT",
+            "LT",
+            "롯데",
+            "KIA",
+            "HT",
+        )
+
+        self.assertIn("5 김선빈 | .276 | 3타수 1안타 1타점 1볼넷", message)
+        self.assertIn("6 김호령 | .268 | 1타수 | 플라이1", message)
+        self.assertIn("7 김태군 | .292 | 2타수 | 병살타23", message)
 
 
 class CompactBatterFormatTest(unittest.TestCase):
