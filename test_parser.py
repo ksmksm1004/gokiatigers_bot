@@ -983,6 +983,60 @@ class CompactBatterFormatTest(unittest.TestCase):
         self.assertIn("7 김선빈 | .248 | 0-0", message)
         self.assertIn("8 김규성 | .245 | 0-0", message)
 
+    def test_expected_batters_fall_back_to_previous_kia_batting_order(self):
+        previous_batter = RelayEvent(
+            event_id=560,
+            inning=7,
+            half="말",
+            text="하주석 : 삼진 아웃",
+            home_score=16,
+            away_score=5,
+            batter_code="62700",
+            home_or_away="1",
+            current_state={"out": "3", "batter": "62700"},
+        )
+        attack_start = RelayEvent(
+            event_id=641,
+            inning=8,
+            half="말",
+            text="8회말 KIA 공격",
+            home_score=16,
+            away_score=11,
+            batter_code="",
+            home_or_away="1",
+            batter_record={"pcode": None, "batOrder": None},
+            current_state={"out": "0", "batter": ""},
+        )
+        relay = {
+            "homeLineup": {
+                "batter": [
+                    {"pcode": "55926", "name": "정현창", "batOrder": 1, "seasonHra": "0.147"},
+                    {"pcode": "69727", "name": "변우혁", "batOrder": 2, "seasonHra": "0.203"},
+                    {"pcode": "69636", "name": "오선우", "batOrder": 3, "seasonHra": "0.214"},
+                    {"pcode": "62700", "name": "하주석", "batOrder": 6, "seasonHra": "0.271"},
+                    {"pcode": "65653", "name": "김호령", "batOrder": 7, "seasonHra": "0.268"},
+                    {"pcode": "66354", "name": "주효상", "batOrder": 8, "seasonHra": "0.211"},
+                    {"pcode": "67609", "name": "박정우", "batOrder": 9, "seasonHra": "0.303"},
+                ]
+            }
+        }
+
+        message = expected_batters_message(
+            attack_start,
+            relay,
+            "HT",
+            "LT",
+            "롯데",
+            "KIA",
+            "HT",
+            relay_events=[previous_batter, attack_start],
+        )
+
+        self.assertIn("7 김호령 | .268 | 0-0", message)
+        self.assertIn("8 주효상 | .211 | 0-0", message)
+        self.assertIn("9 박정우 | .303 | 0-0", message)
+        self.assertNotIn("1 정현창", message)
+
     def test_expected_batters_can_include_previous_kia_pitcher_stats(self):
         event = RelayEvent(
             event_id=1,

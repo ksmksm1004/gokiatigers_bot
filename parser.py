@@ -431,6 +431,33 @@ def active_lineup(relay: dict[str, Any], side: str) -> list[dict[str, Any]]:
     return [by_order[order] for order in sorted(by_order)]
 
 
+def _previous_batter_order(
+    events: list[RelayEvent],
+    event: RelayEvent,
+    relay: dict[str, Any],
+    side: str,
+) -> int:
+    lineup_key = "homeLineup" if side == "home" else "awayLineup"
+    lineup_by_code = {
+        str(player.get("pcode") or ""): player
+        for player in relay.get(lineup_key, {}).get("batter", [])
+    }
+    for candidate in sorted(events, key=lambda item: item.event_id, reverse=True):
+        if candidate.event_id >= event.event_id or candidate.home_or_away != event.home_or_away:
+            continue
+        if candidate.is_attack_start:
+            continue
+        order = _to_int((candidate.batter_record or {}).get("batOrder"))
+        if not order and candidate.batter_code:
+            order = _to_int(lineup_by_code.get(str(candidate.batter_code), {}).get("batOrder"))
+        if not order:
+            match = re.match(r"(\d+)번타자", candidate.title)
+            order = _to_int(match.group(1)) if match else 0
+        if 1 <= order <= 9:
+            return order
+    return 0
+
+
 def expected_batters_message(
     event: RelayEvent,
     relay: dict[str, Any],
@@ -441,6 +468,7 @@ def expected_batters_message(
     team_code: str = KIA_CODE,
     pitcher_lines: list[str] | None = None,
     previous_out_labels: list[str] | None = None,
+    relay_events: list[RelayEvent] | None = None,
 ) -> str:
     if not is_kia_batting(event, home_code, away_code, team_code):
         return ""
@@ -449,12 +477,34 @@ def expected_batters_message(
     if not batters:
         return ""
 
-    start_code = event.batter_code or (event.current_state or {}).get("batter")
-    start_index = 0
-    for index, player in enumerate(batters):
-        if str(player.get("pcode")) == str(start_code):
-            start_index = index
-            break
+    start_index: int | None = None
+    batter_record = event.batter_record or {}
+    record_code = str(batter_record.get("pcode") or "")
+    record_order = _to_int(batter_record.get("batOrder"))
+    if record_code:
+        start_index = next(
+            (index for index, player in enumerate(batters) if str(player.get("pcode")) == record_code),
+            None,
+        )
+    if start_index is None and record_order:
+        start_index = next(
+            (index for index, player in enumerate(batters) if _to_int(player.get("batOrder")) == record_order),
+            None,
+        )
+    if start_index is None and relay_events:
+        previous_order = _previous_batter_order(relay_events, event, relay, side)
+        next_order = previous_order % 9 + 1 if previous_order else 0
+        if next_order:
+            start_index = next(
+                (index for index, player in enumerate(batters) if _to_int(player.get("batOrder")) == next_order),
+                None,
+            )
+    if start_index is None:
+        start_code = event.batter_code or (event.current_state or {}).get("batter")
+        start_index = next(
+            (index for index, player in enumerate(batters) if str(player.get("pcode")) == str(start_code)),
+            0,
+        )
     expected = [batters[(start_index + offset) % len(batters)] for offset in range(min(3, len(batters)))]
     team_name = batting_team_name(event, home_name, away_name)
     score = f"{away_name} {event.away_score} : {event.home_score} {home_name}"

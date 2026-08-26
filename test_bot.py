@@ -11,6 +11,7 @@ from bot import (
     finish_stopped_relay_game_if_done,
     format_team_schedule,
     handle_telegram_commands,
+    include_previous_half_events,
     option_from_callback_data,
     player_from_callback_data,
     player_selection_keyboard,
@@ -1815,6 +1816,59 @@ class TeamScheduleTest(unittest.TestCase):
 
 
 class KiaHalfSummaryTest(unittest.TestCase):
+    def test_missing_attack_start_batter_loads_previous_kia_inning(self):
+        attack_start = RelayEvent(
+            event_id=641,
+            inning=8,
+            half="말",
+            text="8회말 KIA 공격",
+            home_score=16,
+            away_score=11,
+            batter_code="",
+            home_or_away="1",
+            batter_record={"pcode": None, "batOrder": None},
+            current_state={"batter": "", "out": "0"},
+        )
+        current_relay = {
+            "textRelays": [],
+        }
+        previous_relay = {
+            "textRelays": [
+                {
+                    "inn": 7,
+                    "homeOrAway": "1",
+                    "title": "6번타자 하주석",
+                    "textOptions": [
+                        {
+                            "seqno": 560,
+                            "text": "하주석 : 삼진 아웃",
+                            "currentGameState": {
+                                "homeScore": 16,
+                                "awayScore": 5,
+                                "batter": "62700",
+                                "out": "3",
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+        client = FakeClient(relay=current_relay, relay_by_inning={7: previous_relay})
+
+        _, events = include_previous_half_events(
+            client,
+            "20260826LTHT02026",
+            current_relay,
+            [attack_start],
+            set(),
+            "HT",
+            "LT",
+            "HT",
+            640,
+        )
+
+        self.assertTrue(any(event.event_id == 560 for event in events))
+
     def test_opponent_half_summary_is_sent_before_clean_kia_attack_start(self):
         events = [
             RelayEvent(

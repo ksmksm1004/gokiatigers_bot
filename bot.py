@@ -1374,6 +1374,19 @@ def include_previous_half_events(
         if is_kia_batting(event, home_code, away_code, team_code):
             if event.event_id <= last_seq:
                 continue
+            batter_record = event.batter_record or {}
+            has_start_batter = bool(
+                event.batter_code
+                or batter_record.get("pcode")
+                or batter_record.get("batOrder")
+            )
+            previous_kia_inning = event.inning - 1
+            if (
+                not has_start_batter
+                and previous_kia_inning > 0
+                and (previous_kia_inning, event.half) not in available_halves
+            ):
+                missing_innings.add(previous_kia_inning)
         elif half_key(event) in sent_summaries:
             continue
         previous_half = (event.inning, "초") if event.half == "말" else (event.inning - 1, "말")
@@ -1473,6 +1486,7 @@ def dispatch_relay_events(
                 away_name,
                 home_name,
                 settings.team_code,
+                relay_events=all_events,
             )
             if expected:
                 telegram.send_message(expected)
