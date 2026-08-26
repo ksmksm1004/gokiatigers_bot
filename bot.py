@@ -20,6 +20,7 @@ from lineup_image import render_defensive_lineup_image
 from naver_api import NaverSportsClient, unwrap
 from naver_weather import NaverWeatherClient
 from parser import (
+    RelayEvent,
     current_player_record,
     expected_batters_message,
     find_previous_plate_event,
@@ -167,6 +168,83 @@ def opponent_pitching_context(home_code: str, away_code: str, team_code: str) ->
     if home_code == team_code:
         return "away", away_code
     return None
+
+
+def is_relay_game_over_marker(event: RelayEvent) -> bool:
+    return "경기종료" in event.text or "승리투수" in event.text
+
+
+def final_half_summary_message(
+    events: list[RelayEvent],
+    relay: dict[str, Any],
+    game_over_event: RelayEvent,
+    home_code: str,
+    away_code: str,
+    away_name: str,
+    home_name: str,
+    team_code: str,
+) -> str:
+    if game_over_event.half == "초":
+        next_inning = game_over_event.inning
+        next_half = "말"
+        next_home_or_away = "1"
+    else:
+        next_inning = game_over_event.inning + 1
+        next_half = "초"
+        next_home_or_away = "0"
+    transition = RelayEvent(
+        event_id=game_over_event.event_id + 1,
+        inning=next_inning,
+        half=next_half,
+        text=f"{next_inning}회{next_half} 다음 공격",
+        home_score=game_over_event.home_score,
+        away_score=game_over_event.away_score,
+        home_or_away=next_home_or_away,
+    )
+
+    if is_kia_batting(game_over_event, home_code, away_code, team_code):
+        pitcher_lines = []
+        context = opponent_pitching_context(home_code, away_code, team_code)
+        if context:
+            pitching_side, opponent_code = context
+            pitcher_lines = previous_half_pitcher_lines(
+                events,
+                relay,
+                transition,
+                pitching_side,
+                TEAM_PITCHER_LABELS.get(opponent_code, opponent_code),
+            )
+        return kia_half_summary_message(
+            events,
+            relay,
+            transition,
+            home_code,
+            away_code,
+            away_name,
+            home_name,
+            team_code,
+            pitcher_lines,
+        )
+
+    if is_kia_pitching(game_over_event, home_code, away_code, team_code):
+        kia_pitching_side = "home" if home_code == team_code else "away"
+        pitcher_lines = previous_half_pitcher_lines(
+            events,
+            relay,
+            transition,
+            kia_pitching_side,
+        )
+        return opponent_half_summary_message(
+            events,
+            transition,
+            home_code,
+            away_code,
+            away_name,
+            home_name,
+            team_code,
+            pitcher_lines,
+        )
+    return ""
 
 
 def setup_logging(settings: Settings) -> None:
@@ -1491,6 +1569,23 @@ def dispatch_relay_events(
             if expected:
                 telegram.send_message(expected)
             continue
+
+        if is_relay_game_over_marker(event):
+            final_summary_key = f"final:{half_key(event)}"
+            if final_summary_key not in sent_summaries:
+                summary = final_half_summary_message(
+                    all_events,
+                    relay,
+                    event,
+                    home_code,
+                    away_code,
+                    away_name,
+                    home_name,
+                    settings.team_code,
+                )
+                if summary:
+                    telegram.send_message(summary)
+                    sent_summaries.add(final_summary_key)
 
         if not should_send_relay_event(event, home_code, away_code, settings.team_code):
             continue

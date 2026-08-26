@@ -304,6 +304,82 @@ class MonthlyTeamRecordTest(unittest.TestCase):
 
 
 class HalfOutSummaryTest(unittest.TestCase):
+    def test_kia_half_summary_ignores_stale_batter_on_attack_start_marker(self):
+        events = [
+            RelayEvent(
+                490,
+                7,
+                "말",
+                "7회말 KIA 공격",
+                11,
+                5,
+                batter_code="66354",
+                home_or_away="1",
+                current_state={"batter": "66354", "out": "0"},
+            ),
+            RelayEvent(
+                491,
+                7,
+                "말",
+                "김태군 : 중견수 플라이 아웃",
+                11,
+                5,
+                batter_code="78122",
+                player_name="김태군",
+                home_or_away="1",
+                current_state={"batter": "78122", "out": "1"},
+            ),
+            RelayEvent(
+                492,
+                7,
+                "말",
+                "박정우 : 삼진 아웃",
+                11,
+                5,
+                batter_code="67609",
+                player_name="박정우",
+                home_or_away="1",
+                current_state={"batter": "67609", "out": "2"},
+            ),
+            RelayEvent(
+                493,
+                7,
+                "말",
+                "이호연 : 유격수 땅볼 아웃",
+                11,
+                5,
+                batter_code="68504",
+                player_name="이호연",
+                home_or_away="1",
+                current_state={"batter": "68504", "out": "3"},
+            ),
+        ]
+        finished_by = RelayEvent(494, 8, "초", "8회초 롯데 공격", 11, 5, home_or_away="0")
+        relay = {
+            "homeLineup": {
+                "batter": [
+                    {"pcode": "66354", "name": "주효상", "batOrder": 8, "seasonHra": "0.250"},
+                    {"pcode": "78122", "name": "김태군", "batOrder": 8, "seasonHra": "0.286", "ab": 3},
+                    {"pcode": "67609", "name": "박정우", "batOrder": 9, "seasonHra": "0.299", "ab": 3},
+                    {"pcode": "68504", "name": "이호연", "batOrder": 1, "seasonHra": "0.276", "ab": 3},
+                ]
+            }
+        }
+
+        message = kia_half_summary_message(
+            events,
+            relay,
+            finished_by,
+            "HT",
+            "LT",
+            "롯데",
+            "KIA",
+            "HT",
+        )
+
+        self.assertNotIn("주효상", message)
+        self.assertIn("김태군", message)
+
     def test_out_results_follow_api_out_increases_and_include_runner_out(self):
         events = [
             RelayEvent(1, 7, "초", "박재현 : 우익수 뒤 2루타", 2, 3, batter_code="1", player_name="박재현", current_state={"out": "0"}),
@@ -801,6 +877,21 @@ class CompactBatterFormatTest(unittest.TestCase):
         self.assertEqual(history, ["삼진", "땅볼", "안타(타점1)"])
         self.assertIn("6 김선빈 | .251 | 1-3 | 삼진 땅볼 안타(타점1)", message)
 
+    def test_strikeout_reaching_first_is_kept_as_a_strikeout_result(self):
+        event = RelayEvent(
+            event_id=109,
+            inning=2,
+            half="말",
+            text="박정우 : 포수 스트라이크 낫 아웃 (포수 태그아웃)",
+            home_score=3,
+            away_score=1,
+            batter_code="67609",
+            home_or_away="1",
+            player_name="박정우",
+        )
+
+        self.assertEqual(plate_result_history([event], event), ["삼진"])
+
     def test_score_runner_event_omits_repeated_batter_snapshot(self):
         previous = RelayEvent(
             event_id=1,
@@ -954,6 +1045,23 @@ class CompactBatterFormatTest(unittest.TestCase):
                 }
             ),
             "1 박재현 | .284 | 1득점 1볼넷",
+        )
+
+    def test_batter_summary_includes_hit_by_pitch_separately_from_walks(self):
+        self.assertEqual(
+            format_batter_summary_stats(
+                {
+                    "name": "박정우",
+                    "batOrder": 9,
+                    "seasonHra": "0.299",
+                    "ab": 3,
+                    "hit": 1,
+                    "bb": 1,
+                    "hbp": 1,
+                    "so": 2,
+                }
+            ),
+            "9 박정우 | .299 | 3타수 1안타 1볼넷 1사구 2삼진",
         )
 
     def test_expected_batters_use_short_snapshot_without_plate_result(self):

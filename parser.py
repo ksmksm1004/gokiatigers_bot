@@ -396,7 +396,10 @@ def is_steal_event(event: RelayEvent) -> bool:
 
 
 def is_batter_out_event(event: RelayEvent) -> bool:
-    return any(word in event.text for word in ("삼진", "땅볼", "플라이", "뜬공", "직선타", "병살타"))
+    return any(
+        word in event.text
+        for word in ("삼진", "스트라이크 낫 아웃", "땅볼", "플라이", "뜬공", "직선타", "병살타")
+    )
 
 
 def should_send_relay_event(event: RelayEvent, home_code: str, away_code: str, team_code: str = KIA_CODE) -> bool:
@@ -707,6 +710,8 @@ def kia_half_summary_message(
         stranded_by_order.setdefault(batting_order, []).append(base)
     used_codes: list[str] = []
     for event in events:
+        if event.is_attack_start:
+            continue
         if event.inning == inning and event.half == half and event.batter_code and event.batter_code not in used_codes:
             used_codes.append(event.batter_code)
     for batting_order in stranded_by_order:
@@ -1025,6 +1030,7 @@ def _nonzero_batter_fields(player: dict[str, Any]) -> list[str]:
         ("rbi", "타점"),
         ("hr", "홈런"),
         ("bb", "볼넷"),
+        ("hbp", "사구"),
         ("so", "삼진"),
         ("kk", "삼진"),
         ("sb", "도루"),
@@ -1062,7 +1068,7 @@ def _plate_result_label(event: RelayEvent | None, player: dict[str, Any]) -> str
         label = "희생플라이"
     elif "희생번트" in text:
         label = "희생번트"
-    elif "삼진" in text:
+    elif "삼진" in text or "스트라이크 낫 아웃" in text:
         label = "삼진"
     elif "병살타" in text:
         label = "병살타"
