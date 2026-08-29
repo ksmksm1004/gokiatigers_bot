@@ -247,6 +247,99 @@ def final_half_summary_message(
     return ""
 
 
+def half_summary_before_attack_message(
+    events: list[RelayEvent],
+    relay: dict[str, Any],
+    attack_start: RelayEvent,
+    home_code: str,
+    away_code: str,
+    away_name: str,
+    home_name: str,
+    team_code: str,
+) -> str:
+    if is_kia_batting(attack_start, home_code, away_code, team_code):
+        kia_pitching_side = "home" if home_code == team_code else "away"
+        kia_pitcher_lines = previous_half_pitcher_lines(
+            events,
+            relay,
+            attack_start,
+            kia_pitching_side,
+        )
+        return opponent_half_summary_message(
+            events,
+            attack_start,
+            home_code,
+            away_code,
+            away_name,
+            home_name,
+            team_code,
+            kia_pitcher_lines,
+        )
+
+    if is_kia_pitching(attack_start, home_code, away_code, team_code):
+        opponent_pitcher_lines = []
+        context = opponent_pitching_context(home_code, away_code, team_code)
+        if context:
+            pitching_side, opponent_code = context
+            opponent_pitcher_lines = previous_half_pitcher_lines(
+                events,
+                relay,
+                attack_start,
+                pitching_side,
+                TEAM_PITCHER_LABELS.get(opponent_code, opponent_code),
+            )
+        return kia_half_summary_message(
+            events,
+            relay,
+            attack_start,
+            home_code,
+            away_code,
+            away_name,
+            home_name,
+            team_code,
+            opponent_pitcher_lines,
+        )
+    return ""
+
+
+def send_missed_half_summaries(
+    telegram: TelegramBot,
+    settings: Settings,
+    relay: dict[str, Any],
+    events: list[RelayEvent],
+    sent_summaries: set,
+    last_seq: int,
+    away_name: str,
+    home_name: str,
+    away_code: str,
+    home_code: str,
+) -> set:
+    for event in events:
+        if (
+            not event.is_attack_start
+            or event.event_id > last_seq
+            or (event.inning == 1 and event.half == "초")
+        ):
+            continue
+        summary_key = half_key(event)
+        if summary_key in sent_summaries:
+            continue
+        summary = half_summary_before_attack_message(
+            events,
+            relay,
+            event,
+            home_code,
+            away_code,
+            away_name,
+            home_name,
+            settings.team_code,
+        )
+        if summary:
+            telegram.send_message(summary)
+            sent_summaries.add(summary_key)
+    return sent_summaries
+
+
 def setup_logging(settings: Settings) -> None:
     settings.log_path.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
@@ -1358,6 +1451,18 @@ def process_relay(
         settings.team_code,
         last_seq,
     )
+    sent_summaries = send_missed_half_summaries(
+        telegram,
+        settings,
+        relay,
+        events,
+        sent_summaries,
+        last_seq,
+        away_name,
+        home_name,
+        away_code,
+        home_code,
+    )
     if last_seq == 0 and not state.get("relayBootstrapped"):
         latest = events[-1]
         telegram.send_message(
@@ -1449,6 +1554,10 @@ def include_previous_half_events(
     for event in events:
         if not event.is_attack_start:
             continue
+        if half_key(event) not in sent_summaries:
+            previous_half = (event.inning, "초") if event.half == "말" else (event.inning - 1, "말")
+            if previous_half[0] > 0 and previous_half not in available_halves:
+                missing_innings.add(previous_half[0])
         if is_kia_batting(event, home_code, away_code, team_code):
             if event.event_id <= last_seq:
                 continue
@@ -1465,11 +1574,6 @@ def include_previous_half_events(
                 and (previous_kia_inning, event.half) not in available_halves
             ):
                 missing_innings.add(previous_kia_inning)
-        elif half_key(event) in sent_summaries:
-            continue
-        previous_half = (event.inning, "초") if event.half == "말" else (event.inning - 1, "말")
-        if previous_half[0] > 0 and previous_half not in available_halves:
-            missing_innings.add(previous_half[0])
 
     if not missing_innings:
         return relay, events
@@ -1511,47 +1615,16 @@ def dispatch_relay_events(
         if event.is_attack_start:
             summary_key = half_key(event)
             if summary_key not in sent_summaries:
-                if is_kia_batting(event, home_code, away_code, settings.team_code):
-                    kia_pitching_side = "home" if home_code == settings.team_code else "away"
-                    kia_pitcher_lines = previous_half_pitcher_lines(
-                        all_events,
-                        relay,
-                        event,
-                        kia_pitching_side,
-                    )
-                    summary = opponent_half_summary_message(
-                        all_events,
-                        event,
-                        home_code,
-                        away_code,
-                        away_name,
-                        home_name,
-                        settings.team_code,
-                        kia_pitcher_lines,
-                    )
-                else:
-                    opponent_pitcher_lines = []
-                    context = opponent_pitching_context(home_code, away_code, settings.team_code)
-                    if context:
-                        pitching_side, opponent_code = context
-                        opponent_pitcher_lines = previous_half_pitcher_lines(
-                            all_events,
-                            relay,
-                            event,
-                            pitching_side,
-                            TEAM_PITCHER_LABELS.get(opponent_code, opponent_code),
-                        )
-                    summary = kia_half_summary_message(
-                        all_events,
-                        relay,
-                        event,
-                        home_code,
-                        away_code,
-                        away_name,
-                        home_name,
-                        settings.team_code,
-                        opponent_pitcher_lines,
-                    )
+                summary = half_summary_before_attack_message(
+                    all_events,
+                    relay,
+                    event,
+                    home_code,
+                    away_code,
+                    away_name,
+                    home_name,
+                    settings.team_code,
+                )
                 if summary:
                     telegram.send_message(summary)
                     sent_summaries.add(summary_key)

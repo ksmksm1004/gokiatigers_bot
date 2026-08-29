@@ -1816,6 +1816,134 @@ class TeamScheduleTest(unittest.TestCase):
 
 
 class KiaHalfSummaryTest(unittest.TestCase):
+    def test_process_retries_missed_summary_after_cursor_passes_extra_inning_start(self):
+        current_relay = {
+            "homeLineup": {
+                "batter": [
+                    {
+                        "pcode": "65653",
+                        "name": "김호령",
+                        "batOrder": 9,
+                        "seasonHra": "0.271",
+                        "ab": 4,
+                        "hit": 2,
+                        "run": 1,
+                        "so": 1,
+                    }
+                ]
+            },
+            "awayLineup": {
+                "pitcher": [
+                    {
+                        "pcode": "51897",
+                        "name": "조병현",
+                        "seqno": 3,
+                        "ballCount": 15,
+                        "inn": "1.0",
+                        "hit": 1,
+                        "run": 0,
+                        "er": 0,
+                        "bb": 0,
+                        "hbp": 1,
+                        "kk": 2,
+                        "seasonEra": "2.84",
+                    }
+                ]
+            },
+            "textRelays": [
+                {
+                    "inn": 10,
+                    "homeOrAway": "0",
+                    "title": "10회초 SSG 공격",
+                    "textOptions": [
+                        {
+                            "seqno": 492,
+                            "text": "10회초 SSG 공격",
+                            "batterRecord": {"pcode": "52807", "batOrder": 8},
+                            "currentGameState": {
+                                "awayScore": 1,
+                                "homeScore": 1,
+                                "batter": "52807",
+                                "pitcher": "50662",
+                                "out": "0",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        previous_relay = {
+            "textRelays": [
+                {
+                    "inn": 9,
+                    "homeOrAway": "1",
+                    "title": "9번타자 김호령",
+                    "textOptions": [
+                        {
+                            "seqno": 491,
+                            "text": "김호령 : 삼진 아웃",
+                            "currentGameState": {
+                                "awayScore": 1,
+                                "homeScore": 1,
+                                "batter": "65653",
+                                "pitcher": "51897",
+                                "out": "3",
+                                "base1": "0",
+                                "base2": "0",
+                                "base3": "0",
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            state = {
+                "lastRelaySeq": 492,
+                "relayBootstrapped": True,
+                "kiaHalfSummariesSent": ["9말"],
+            }
+            telegram = FakeTelegram()
+            client = FakeClient(relay=current_relay, relay_by_inning={9: previous_relay})
+
+            process_relay(
+                client,
+                telegram,
+                settings,
+                state,
+                "20260829SKHT02026",
+                "SSG",
+                "KIA",
+                "SK",
+                "HT",
+            )
+            process_relay(
+                client,
+                telegram,
+                settings,
+                state,
+                "20260829SKHT02026",
+                "SSG",
+                "KIA",
+                "SK",
+                "HT",
+            )
+
+        self.assertEqual(len(telegram.messages), 1)
+        self.assertIn("KIA 공격 종료 | 9회말", telegram.messages[0])
+        self.assertIn("SSG 1 : 1 KIA", telegram.messages[0])
+        self.assertIn("김호령", telegram.messages[0])
+        self.assertIn("조병현(SSG) | 15개 | 1이닝", telegram.messages[0])
+        self.assertIn("10초", state["kiaHalfSummariesSent"])
+
     def test_walkoff_kia_half_summary_is_sent_before_game_over(self):
         events = [
             RelayEvent(
