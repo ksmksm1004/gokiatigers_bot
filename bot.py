@@ -790,7 +790,7 @@ def send_lineup_once(
             save_state(settings.state_path, state)
             logging.info("Sent %s lineup for %s.", label, game_id)
         except Exception:
-            logging.exception("Failed to send %s lineup for %s. It will not be retried automatically.", label, game_id)
+            logging.exception("Failed to send %s lineup for %s. It will be retried on the next lineup check.", label, game_id)
 
     if kia_side and state.get("lineupDefenseSentGameId") != game_id:
         try:
@@ -2858,7 +2858,10 @@ def main() -> None:
                 sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.pregame_poll_seconds)
                 continue
 
-            if state.get("lineupSentGameId") != summary.game_id:
+            if (
+                state.get("lineupSentGameId") != summary.game_id
+                and not is_terminal_game(detailed_game, set())
+            ):
                 try:
                     send_lineup_once(client, telegram, settings, state, summary.game_id)
                 except Exception:

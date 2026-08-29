@@ -8,6 +8,14 @@ from typing import Any
 import requests
 
 
+class TelegramAPIError(requests.HTTPError):
+    def __init__(self, method: str, status_code: int, description: str) -> None:
+        self.method = method
+        self.status_code = status_code
+        self.description = description
+        super().__init__(f"Telegram {method} failed ({status_code}): {description}")
+
+
 class TelegramBot:
     def __init__(
         self,
@@ -62,7 +70,7 @@ class TelegramBot:
             params={"chat_id": chat_id},
             timeout=10,
         )
-        response.raise_for_status()
+        self._raise_api_error("getChatAdministrators", response)
         data = response.json()
         if not data.get("ok"):
             return []
@@ -73,11 +81,14 @@ class TelegramBot:
         if self.dry_run:
             self._dry_run_each("photo", f"{photo_url}\n{caption}")
             return
+        download_cache: dict[str, tuple[bytes, str, str]] = {}
         self._send_each(
             "photo",
-            lambda chat_id: self._post(
-                "sendPhoto",
-                {"chat_id": chat_id, "photo": photo_url, "caption": caption},
+            lambda chat_id: self._send_photo_to_chat(
+                chat_id,
+                photo_url,
+                caption,
+                download_cache=download_cache,
             ),
         )
 
@@ -85,9 +96,23 @@ class TelegramBot:
         if self.dry_run:
             self._dry_run_each("photo file", f"{filename} ({len(photo)} bytes)\n{caption}")
             return
+
+        def send(chat_id: str) -> None:
+            try:
+                self._post_photo_bytes(chat_id, photo, caption, filename)
+            except TelegramAPIError as exc:
+                if exc.status_code != 400:
+                    raise
+                logging.warning(
+                    "Telegram rejected uploaded photo for chat %s: %s. Sending text instead.",
+                    chat_id,
+                    exc.description,
+                )
+                self._post("sendMessage", self._message_payload(chat_id, caption))
+
         self._send_each(
             "photo file",
-            lambda chat_id: self._post_photo_bytes(chat_id, photo, caption, filename),
+            send,
         )
 
     def send_media_group(self, items: list[tuple[str, str]]) -> None:
@@ -104,9 +129,32 @@ class TelegramBot:
             {"type": "photo", "media": photo_url, "caption": caption}
             for photo_url, caption in items[:10]
         ]
+        download_cache: dict[str, tuple[bytes, str, str]] = {}
+
+        def send(chat_id: str) -> None:
+            try:
+                self._post("sendMediaGroup", {"chat_id": chat_id, "media": media})
+                return
+            except TelegramAPIError as exc:
+                if exc.status_code != 400:
+                    raise
+                logging.warning(
+                    "Telegram rejected remote media group for chat %s: %s. Sending individual uploads.",
+                    chat_id,
+                    exc.description,
+                )
+            for photo_url, caption in items[:10]:
+                self._send_photo_to_chat(
+                    chat_id,
+                    photo_url,
+                    caption,
+                    prefer_upload=True,
+                    download_cache=download_cache,
+                )
+
         self._send_each(
             "media group",
-            lambda chat_id: self._post("sendMediaGroup", {"chat_id": chat_id, "media": media}),
+            send,
         )
 
     def set_commands(self, commands: list[tuple[str, str]]) -> None:
@@ -130,12 +178,12 @@ class TelegramBot:
         for attempt in range(2):
             try:
                 response = self.session.get(f"{self.base_url}/getUpdates", params=payload, timeout=10)
-                response.raise_for_status()
+                self._raise_api_error("getUpdates", response)
                 data = response.json()
                 if not data.get("ok"):
                     return []
                 return data.get("result", [])
-            except requests.HTTPError:
+            except TelegramAPIError:
                 raise
             except (requests.ConnectionError, requests.Timeout):
                 if attempt == 0:
@@ -146,7 +194,10 @@ class TelegramBot:
         return []
 
     def _post(self, method: str, payload: dict[str, Any]) -> None:
-        response = self.session.post(f"{self.base_url}/{method}", json=payload, timeout=10)
+        try:
+            response = self.session.post(f"{self.base_url}/{method}", json=payload, timeout=10)
+        except requests.RequestException as exc:
+            raise TelegramAPIError(method, 0, f"transport error: {type(exc).__name__}") from None
         if response.status_code == 429:
             retry_after = 3
             try:
@@ -155,19 +206,32 @@ class TelegramBot:
                 retry_after = 3
             logging.warning("Telegram rate limited on %s. Retrying after %ss.", method, retry_after)
             time.sleep(min(retry_after + 1, 65))
-            response = self.session.post(f"{self.base_url}/{method}", json=payload, timeout=10)
-        response.raise_for_status()
+            try:
+                response = self.session.post(f"{self.base_url}/{method}", json=payload, timeout=10)
+            except requests.RequestException as exc:
+                raise TelegramAPIError(method, 0, f"transport error: {type(exc).__name__}") from None
+        self._raise_api_error(method, response)
 
-    def _post_photo_bytes(self, chat_id: str, photo: bytes, caption: str, filename: str) -> None:
+    def _post_photo_bytes(
+        self,
+        chat_id: str,
+        photo: bytes,
+        caption: str,
+        filename: str,
+        content_type: str = "image/png",
+    ) -> None:
         payload = {"chat_id": chat_id, "caption": caption}
 
         def post_photo():
-            return self.session.post(
-                f"{self.base_url}/sendPhoto",
-                data=payload,
-                files={"photo": (filename, photo, "image/png")},
-                timeout=20,
-            )
+            try:
+                return self.session.post(
+                    f"{self.base_url}/sendPhoto",
+                    data=payload,
+                    files={"photo": (filename, photo, content_type)},
+                    timeout=20,
+                )
+            except requests.RequestException as exc:
+                raise TelegramAPIError("sendPhoto", 0, f"transport error: {type(exc).__name__}") from None
 
         response = post_photo()
         if response.status_code == 429:
@@ -179,7 +243,91 @@ class TelegramBot:
             logging.warning("Telegram rate limited on sendPhoto. Retrying after %ss.", retry_after)
             time.sleep(min(retry_after + 1, 65))
             response = post_photo()
+        self._raise_api_error("sendPhoto", response)
+
+    def _send_photo_to_chat(
+        self,
+        chat_id: str,
+        photo_url: str,
+        caption: str,
+        prefer_upload: bool = False,
+        download_cache: dict[str, tuple[bytes, str, str]] | None = None,
+    ) -> None:
+        if not prefer_upload:
+            try:
+                self._post(
+                    "sendPhoto",
+                    {"chat_id": chat_id, "photo": photo_url, "caption": caption},
+                )
+                return
+            except TelegramAPIError as exc:
+                if exc.status_code != 400:
+                    raise
+                logging.warning(
+                    "Telegram rejected remote photo for chat %s: %s. Uploading downloaded bytes.",
+                    chat_id,
+                    exc.description,
+                )
+
+        try:
+            cache = download_cache if download_cache is not None else {}
+            downloaded = cache.get(photo_url)
+            if downloaded is None:
+                downloaded = self._download_photo(photo_url)
+                cache[photo_url] = downloaded
+            photo, filename, content_type = downloaded
+            self._post_photo_bytes(chat_id, photo, caption, filename, content_type)
+            return
+        except Exception:
+            logging.exception(
+                "Telegram photo upload fallback failed for chat %s. Sending text instead.",
+                chat_id,
+            )
+
+        self._post("sendMessage", self._message_payload(chat_id, caption))
+
+    def _download_photo(self, photo_url: str) -> tuple[bytes, str, str]:
+        response = self.session.get(
+            photo_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                "Referer": "https://m.sports.naver.com/",
+            },
+            timeout=15,
+        )
         response.raise_for_status()
+        photo = response.content
+        if not photo:
+            raise ValueError("Downloaded photo is empty.")
+        content_type = str(response.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0]
+        extension = {
+            "image/gif": "gif",
+            "image/png": "png",
+            "image/webp": "webp",
+        }.get(content_type, "jpg")
+        return photo, f"photo.{extension}", content_type
+
+    @staticmethod
+    def _message_payload(chat_id: str, text: str) -> dict[str, Any]:
+        return {
+            "chat_id": chat_id,
+            "text": text,
+            "disable_web_page_preview": False,
+        }
+
+    def _raise_api_error(self, method: str, response: requests.Response) -> None:
+        status_code = int(response.status_code or 0)
+        if status_code < 400:
+            return
+        description = str(response.text or "HTTP error")[:500]
+        try:
+            data = response.json()
+            description = str(data.get("description") or description)[:500]
+        except (TypeError, ValueError):
+            pass
+        if self.token:
+            description = description.replace(self.token, "[redacted]")
+        raise TelegramAPIError(method, status_code, description)
 
     def _send_each(self, label: str, send: Callable[[str], None]) -> None:
         failures: list[Exception] = []
