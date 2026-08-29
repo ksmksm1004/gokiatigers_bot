@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -324,6 +325,11 @@ def send_missed_half_summaries(
         summary_key = half_key(event)
         if summary_key in sent_summaries:
             continue
+        logging.info(
+            "Recovering missed half-inning summary %s after relay seq %s.",
+            summary_key,
+            last_seq,
+        )
         summary = half_summary_before_attack_message(
             events,
             relay,
@@ -1508,6 +1514,14 @@ def process_relay(
         return is_game_over(events)
 
     new_events = [event for event in events if event.event_id > last_seq]
+    if new_events:
+        logging.info(
+            "Processing relay events for %s: seq %s-%s (%s events).",
+            game_id,
+            new_events[0].event_id,
+            new_events[-1].event_id,
+            len(new_events),
+        )
     sent_summaries = dispatch_relay_events(
         telegram,
         settings,
@@ -2707,7 +2721,13 @@ def main() -> None:
     telegram = TelegramBot(settings.telegram_token, settings.all_telegram_chat_ids, settings.dry_run)
     state = load_state(settings.state_path)
 
-    logging.info("KIA Telegram bot started. dry_run=%s", settings.dry_run)
+    logging.info(
+        "KIA Telegram bot started. dry_run=%s source=%s python=%s state=%s",
+        settings.dry_run,
+        Path(__file__).resolve(),
+        sys.version.split()[0],
+        settings.state_path,
+    )
     try:
         telegram.set_commands(TELEGRAM_MENU_COMMANDS)
     except Exception:
