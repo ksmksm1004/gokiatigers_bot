@@ -3,6 +3,7 @@ from datetime import date
 
 from parser import (
     RelayEvent,
+    apply_postseason_relay_stats,
     changed_pitcher_lines,
     current_player_record,
     expected_batters_message,
@@ -10,6 +11,7 @@ from parser import (
     format_kia_news_articles,
     format_monthly_team_records,
     format_player_record_stats,
+    format_postseason_series_status,
     format_relay_event,
     format_relay_event_with_context,
     format_team_record_stats,
@@ -19,6 +21,7 @@ from parser import (
     kia_news_articles,
     lineup_media_items,
     opponent_half_summary_message,
+    parse_game_summary,
     parse_relay_events,
     plate_result_history,
     player_image_url,
@@ -183,6 +186,75 @@ class FormatPreviewTest(unittest.TestCase):
         self.assertIn("KIA: 승 무 승 패 패", message)
         self.assertIn("상대: 패 승 승 패 승", message)
         self.assertIn("KIA 6승 1무 2패", message)
+
+    def test_postseason_preview_shows_round_and_series_record(self):
+        preview = {
+            "gameInfo": {
+                "aCode": "HT",
+                "hCode": "SS",
+                "aName": "KIA",
+                "hName": "삼성",
+                "gdate": 20261014,
+                "gtime": "18:30",
+                "stadium": "대구",
+                "isPostSeason": True,
+                "gameFlag": "3",
+                "round": 4,
+            },
+            "awayStandings": {
+                "name": "KIA",
+                "seriesOutcome": {"w": 1, "d": 0, "l": 2},
+            },
+            "homeStandings": {
+                "name": "삼성",
+                "seriesOutcome": {"w": 2, "d": 0, "l": 1},
+            },
+        }
+
+        message = format_preview(preview, "33331014HTSS02026", "HT")
+
+        self.assertIn("준플레이오프 4차전", message)
+        self.assertIn("KIA 1승 0무 2패 | 삼성 2승 0무 1패", message)
+
+
+class PostseasonFormatTest(unittest.TestCase):
+    def test_game_summary_detects_postseason_game_id(self):
+        summary = parse_game_summary(
+            {
+                "gameId": "77771031HTLG02026",
+                "gameDateTime": "2026-10-31T18:30:00",
+            }
+        )
+
+        self.assertTrue(summary.is_postseason)
+
+    def test_relay_uses_postseason_average_and_era(self):
+        relay = {
+            "homeLineup": {
+                "batter": [{"seasonHra": 0.301, "psHra": 0.375}],
+                "pitcher": [{"seasonEra": "2.86", "psEra": "3.5"}],
+            }
+        }
+
+        apply_postseason_relay_stats(relay)
+
+        self.assertEqual(relay["homeLineup"]["batter"][0]["seasonHra"], 0.375)
+        self.assertEqual(relay["homeLineup"]["pitcher"][0]["seasonEra"], "3.50")
+
+    def test_formats_final_postseason_series_record(self):
+        message = format_postseason_series_status(
+            {
+                "roundCode": "kbo_ps_ks",
+                "awayTeamName": "KIA",
+                "homeTeamName": "LG",
+                "seriesOutcome": {"away": 4, "home": 2, "draw": 0},
+            }
+        )
+
+        self.assertEqual(
+            message,
+            "KBO 한국시리즈 시리즈 전적\nKIA 4승 0무 2패\nLG 2승 0무 4패",
+        )
 
 
 class RecordStatsFormatTest(unittest.TestCase):

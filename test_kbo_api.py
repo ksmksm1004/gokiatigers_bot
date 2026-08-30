@@ -214,7 +214,7 @@ class KBOScheduleResultTest(unittest.TestCase):
         self.assertEqual(games[0].away_team, "키움")
         self.assertEqual((games[0].away_score, games[0].home_score), (2, 6))
 
-    def test_client_requests_the_whole_regular_season_once(self):
+    def test_client_requests_regular_and_postseason_once(self):
         response = Mock()
         response.json.return_value = {"rows": []}
         client = KBOPlayerClient()
@@ -226,7 +226,7 @@ class KBOScheduleResultTest(unittest.TestCase):
             client._request.call_args.kwargs["data"],
             {
                 "leId": 1,
-                "srIdList": "0,9,6",
+                "srIdList": "0,9,6,3,4,5,7",
                 "seasonId": 2026,
                 "gameMonth": "",
                 "teamId": "HT",
@@ -298,6 +298,18 @@ class KBOScheduleResultTest(unittest.TestCase):
                 ]
             ),
         )
+
+    def test_separates_postseason_rematch_after_a_long_gap(self):
+        games = [
+            KBOGameResult(date(2026, 10, 2), "삼성", 2, 4, "KIA"),
+            KBOGameResult(date(2026, 10, 3), "삼성", 3, 5, "KIA"),
+            KBOGameResult(date(2026, 10, 14), "KIA", 6, 1, "삼성"),
+            KBOGameResult(date(2026, 10, 15), "KIA", 2, 3, "삼성"),
+        ]
+
+        message = format_recent_series_results(games)
+
+        self.assertEqual(message.count("vs 삼성"), 2)
 
 
 class KBOExpectedRecordTest(unittest.TestCase):

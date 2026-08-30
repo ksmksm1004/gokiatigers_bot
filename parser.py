@@ -39,6 +39,7 @@ class GameSummary:
     stadium: str
     start_at: datetime | None
     status_code: str
+    is_postseason: bool = False
 
 
 @dataclass(frozen=True)
@@ -121,7 +122,20 @@ def parse_game_summary(game: dict[str, Any], fallback_game_id: str | None = None
         stadium=str(game.get("stadium") or game.get("stadiumName") or ""),
         start_at=start_at,
         status_code=str(game.get("statusCode") or game.get("gameStatus") or ""),
+        is_postseason=is_postseason_game(game),
     )
+
+
+def is_postseason_game(game: dict[str, Any]) -> bool:
+    postseason = game.get("isPostSeason")
+    if postseason is True or str(postseason).strip().lower() in {"true", "y", "yes", "1"}:
+        return True
+    if str(game.get("roundCode") or "").lower().startswith("kbo_ps_"):
+        return True
+    if str(game.get("gameFlag") or "") in {"3", "4", "5", "7"}:
+        return True
+    game_id = str(game.get("gameId") or "")
+    return bool(re.match(r"^(?:3{4}|4{4}|5{4}|7{4})\d{4}", game_id))
 
 
 def team_in_game(game: dict[str, Any], team_code: str) -> bool:
@@ -144,8 +158,9 @@ def format_preview(preview: dict[str, Any], game_id: str, team_code: str = KIA_C
         "KIA 경기 프리뷰",
         f"{date} {time} {stadium}",
         f"{away} vs {home}",
-        "",
     ]
+    lines += _postseason_preview_lines(preview)
+    lines.append("")
 
     lines += _standings_lines(preview)
     lines += _starter_lines(preview)
@@ -154,6 +169,55 @@ def format_preview(preview: dict[str, Any], game_id: str, team_code: str = KIA_C
     lines.append("")
     lines.append(f"네이버 중계: https://m.sports.naver.com/game/{game_id}/relay")
     return "\n".join(line for line in lines if line is not None)
+
+
+def _postseason_preview_lines(preview: dict[str, Any]) -> list[str]:
+    info = preview.get("gameInfo", {})
+    if not is_postseason_game(info):
+        return []
+
+    round_name = {
+        "3": "준플레이오프",
+        "4": "와일드카드 결정전",
+        "5": "플레이오프",
+        "7": "한국시리즈",
+    }.get(str(info.get("gameFlag") or ""), "포스트시즌")
+    game_number = _to_int(info.get("round"))
+    lines = [f"{round_name}{f' {game_number}차전' if game_number else ''}"]
+
+    away = preview.get("awayStandings", {})
+    home = preview.get("homeStandings", {})
+    away_outcome = away.get("seriesOutcome") or {}
+    home_outcome = home.get("seriesOutcome") or {}
+    if away_outcome.get("w") is not None and home_outcome.get("w") is not None:
+        lines.append(
+            "시리즈 전적: "
+            f"{away.get('name', '원정')} {away_outcome.get('w', 0)}승 "
+            f"{away_outcome.get('d', 0)}무 {away_outcome.get('l', 0)}패 | "
+            f"{home.get('name', '홈')} {home_outcome.get('w', 0)}승 "
+            f"{home_outcome.get('d', 0)}무 {home_outcome.get('l', 0)}패"
+        )
+    return lines
+
+
+def apply_postseason_relay_stats(relay: dict[str, Any]) -> dict[str, Any]:
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if node.get("psHra") not in (None, ""):
+                node["seasonHra"] = node["psHra"]
+            if node.get("psEra") not in (None, ""):
+                try:
+                    node["seasonEra"] = f"{float(node['psEra']):.2f}"
+                except (TypeError, ValueError):
+                    node["seasonEra"] = node["psEra"]
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(relay)
+    return relay
 
 
 def _standings_lines(preview: dict[str, Any]) -> list[str]:
@@ -1271,6 +1335,32 @@ def format_daily_game_results(
             f"{home_score if home_score is not None else '-'} {home_name}{suffix}"
         )
     return "\n".join(lines)
+
+
+def format_postseason_series_status(game: dict[str, Any]) -> str:
+    round_name = {
+        "kbo_ps_wd": "와일드카드 결정전",
+        "kbo_ps_sp": "준플레이오프",
+        "kbo_ps_po": "플레이오프",
+        "kbo_ps_ks": "한국시리즈",
+    }.get(str(game.get("roundCode") or "").lower(), "포스트시즌")
+    outcome = game.get("seriesOutcome") or {}
+    away_wins = _to_int(outcome.get("away"))
+    home_wins = _to_int(outcome.get("home"))
+    draws = _to_int(outcome.get("draw"))
+    away_name = str(game.get("awayTeamName") or game.get("aName") or "원정")
+    home_name = str(game.get("homeTeamName") or game.get("hName") or "홈")
+    if not outcome:
+        game_number = _to_int(game.get("seriesGameNo") or game.get("round"))
+        suffix = f" {game_number}차전 종료" if game_number else ""
+        return f"KBO {round_name}{suffix}"
+    return "\n".join(
+        [
+            f"KBO {round_name} 시리즈 전적",
+            f"{away_name} {away_wins}승 {draws}무 {home_wins}패",
+            f"{home_name} {home_wins}승 {draws}무 {away_wins}패",
+        ]
+    )
 
 
 TEAM_RECORD_OPTIONS = {

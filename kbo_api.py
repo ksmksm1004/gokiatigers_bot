@@ -23,6 +23,7 @@ KBO_BASE_URL = "https://www.koreabaseball.com/"
 KBO_PLAYER_SEARCH_URL = urljoin(KBO_BASE_URL, "ws/Controls.asmx/GetSearchPlayer")
 KBO_SCHEDULE_URL = urljoin(KBO_BASE_URL, "ws/Schedule.asmx/GetScheduleList")
 KBO_EXPECTED_RECORD_LIST_URL = urljoin(KBO_BASE_URL, "Record/Expectation/DailyList.aspx")
+KBO_FIRST_TEAM_SERIES_IDS = "0,9,6,3,4,5,7"
 
 
 @dataclass(frozen=True)
@@ -282,7 +283,7 @@ class KBOPlayerClient:
             KBO_SCHEDULE_URL,
             data={
                 "leId": 1,
-                "srIdList": "0,9,6",
+                "srIdList": KBO_FIRST_TEAM_SERIES_IDS,
                 "seasonId": int(season),
                 "gameMonth": "",
                 "teamId": team_id,
@@ -928,7 +929,13 @@ def format_recent_series_results(
     )
     for game in selected:
         opponent = game.home_team if game.away_team == team_name else game.away_team
-        if series and series[-1]["opponent"] == opponent:
+        previous_game = series[-1]["games"][-1] if series else None
+        if (
+            series
+            and series[-1]["opponent"] == opponent
+            and previous_game is not None
+            and (game.game_date - previous_game.game_date).days <= 4
+        ):
             series[-1]["games"].append(game)
         else:
             series.append({"opponent": opponent, "games": [game]})

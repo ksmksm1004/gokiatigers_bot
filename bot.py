@@ -22,6 +22,7 @@ from naver_api import NaverSportsClient, unwrap
 from naver_weather import NaverWeatherClient
 from parser import (
     RelayEvent,
+    apply_postseason_relay_stats,
     current_player_record,
     expected_batters_message,
     find_previous_plate_event,
@@ -35,6 +36,7 @@ from parser import (
     format_kia_record,
     format_pitching_decision_update,
     format_pitching_decisions,
+    format_postseason_series_status,
     format_preview,
     format_team_record_stats,
     format_team_rankings,
@@ -51,6 +53,7 @@ from parser import (
     is_kia_batting,
     is_kia_batter_event,
     is_kia_pitching,
+    is_postseason_game,
     kia_half_summary_message,
     opponent_half_summary_message,
     lineup_media_items,
@@ -154,7 +157,9 @@ TEAM_PITCHER_LABELS = {
     "KT": "KT",
 }
 
-TERMINAL_SCHEDULE_STATUS = {"RESULT", "END", "ENDED", "CANCEL", "CANCELED", "CANCELLED"}
+ACTIVE_SCHEDULE_STATUS = {"2", "STARTED", "LIVE", "PLAYING"}
+SUSPENDED_SCHEDULE_STATUS = {"SUSPENDED", "SUSPEND", "PAUSED", "DELAYED"}
+TERMINAL_SCHEDULE_STATUS = {"4", "RESULT", "END", "ENDED", "CANCEL", "CANCELED", "CANCELLED"}
 PITCHING_DECISION_POLL_SECONDS = 60
 KIA_HIGHLIGHT_RETRY_MINUTES = 10
 KIA_HIGHLIGHT_MAX_ATTEMPTS = 12
@@ -465,6 +470,40 @@ def get_cached_today_game(
     now: datetime,
 ) -> dict[str, Any] | None:
     today = now.date().isoformat()
+    cached_game = state.get("scheduledGame") or {}
+    cached_game_id = str(cached_game.get("gameId") or state.get("gameId") or "")
+    try:
+        cached_date = date.fromisoformat(str(state.get("scheduleDate") or ""))
+    except ValueError:
+        cached_date = None
+    unfinished_previous_game = (
+        cached_game
+        and cached_game_id
+        and cached_date is not None
+        and 1 <= (now.date() - cached_date).days <= 2
+        and state.get("gameOverSentGameId") != cached_game_id
+        and state.get("cancelSentGameId") != cached_game_id
+    )
+    if unfinished_previous_game:
+        if (now.date() - cached_date).days == 1 and now.hour < 6:
+            return cached_game
+        try:
+            carryover_detail = unwrap(client.game_detail(cached_game_id), "game")
+        except Exception:
+            logging.exception("Failed to inspect carry-over game %s.", cached_game_id)
+            return cached_game
+        carryover_status = str(carryover_detail.get("statusCode") or "").upper()
+        if (
+            carryover_detail.get("suspended")
+            or carryover_status in SUSPENDED_SCHEDULE_STATUS
+            or carryover_status in ACTIVE_SCHEDULE_STATUS
+            or carryover_status in TERMINAL_SCHEDULE_STATUS
+            or is_cancelled_game(carryover_detail)
+        ):
+            carried_game = merge_game_status(cached_game, carryover_detail)
+            state["scheduledGame"] = carried_game
+            save_state(settings.state_path, state)
+            return carried_game
     if state.get("scheduleDate") == today and state.get("scheduledGame"):
         return state["scheduledGame"]
 
@@ -509,6 +548,9 @@ def get_detailed_game(
 
 
 def should_poll_game(summary, settings: Settings, now: datetime) -> bool:
+    status = str(getattr(summary, "status_code", "") or "").upper()
+    if status in ACTIVE_SCHEDULE_STATUS or status in TERMINAL_SCHEDULE_STATUS:
+        return True
     if summary.start_at is None:
         return True
     if summary.start_at.tzinfo is None:
@@ -516,6 +558,14 @@ def should_poll_game(summary, settings: Settings, now: datetime) -> bool:
     else:
         start_at = summary.start_at.astimezone(settings.timezone)
     return start_at - timedelta(minutes=settings.pregame_minutes) <= now <= start_at + timedelta(hours=5, minutes=settings.postgame_minutes)
+
+
+def game_date_from_summary(summary, settings: Settings, fallback: datetime) -> date:
+    if summary.start_at is None:
+        return fallback.date()
+    if summary.start_at.tzinfo is None:
+        return summary.start_at.replace(tzinfo=settings.timezone).date()
+    return summary.start_at.astimezone(settings.timezone).date()
 
 
 def seconds_until_pregame(summary, settings: Settings, now: datetime) -> int:
@@ -1438,8 +1488,11 @@ def process_relay(
     home_name: str,
     away_code: str,
     home_code: str,
+    is_postseason: bool = False,
 ) -> bool:
     relay = unwrap(client.relay(game_id), "textRelayData")
+    if is_postseason:
+        relay = apply_postseason_relay_stats(relay)
     events = parse_relay_events(relay)
     if not events:
         return False
@@ -1456,6 +1509,7 @@ def process_relay(
         away_code,
         settings.team_code,
         last_seq,
+        is_postseason,
     )
     sent_summaries = send_missed_half_summaries(
         telegram,
@@ -1562,6 +1616,7 @@ def include_previous_half_events(
     away_code: str,
     team_code: str,
     last_seq: int,
+    is_postseason: bool = False,
 ) -> tuple[dict[str, Any], list]:
     available_halves = {(event.inning, event.half) for event in events}
     missing_innings: set[int] = set()
@@ -1596,6 +1651,8 @@ def include_previous_half_events(
     for inning in sorted(missing_innings):
         try:
             previous_relay = unwrap(client.relay(game_id, inning=inning), "textRelayData")
+            if is_postseason:
+                previous_relay = apply_postseason_relay_stats(previous_relay)
             combined_groups = list(previous_relay.get("textRelays", [])) + combined_groups
         except Exception:
             logging.exception("Failed to load inning %s for half-inning notification context.", inning)
@@ -2292,8 +2349,9 @@ def schedule_kia_highlight_after_rankings(
     now: datetime,
     games: list[dict[str, Any]],
     cancelled_ids: set[str],
+    game_date: date | None = None,
 ) -> None:
-    target_date = now.date().isoformat()
+    target_date = (game_date or now.date()).isoformat()
     if state.get("kiaHighlightSentDate") == target_date or state.get("kiaHighlightStoppedDate") == target_date:
         return
     if state.get("kiaHighlightDate") == target_date and state.get("nextKiaHighlightAt"):
@@ -2506,7 +2564,14 @@ def finish_stopped_relay_game_if_done(
             kbo_client,
         )
         if not record_sent:
-            send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
+            send_daily_rankings_if_all_games_done(
+                client,
+                telegram,
+                settings,
+                state,
+                now,
+                game_date_from_summary(summary, settings, now),
+            )
             return True
         telegram.send_message("경기 종료 알림을 확인했습니다. 오늘도 수고하셨습니다.")
         state["gameOverSentGameId"] = summary.game_id
@@ -2524,7 +2589,14 @@ def finish_stopped_relay_game_if_done(
             score_from_game(detailed_game, "home") or int(state.get("homeScore") or 0),
             kbo_client,
         )
-    send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
+    send_daily_rankings_if_all_games_done(
+        client,
+        telegram,
+        settings,
+        state,
+        now,
+        game_date_from_summary(summary, settings, now),
+    )
     return True
 
 
@@ -2548,20 +2620,44 @@ def send_daily_rankings_if_all_games_done(
     settings: Settings,
     state: dict[str, Any],
     now: datetime,
+    target_date: date | None = None,
 ) -> bool:
-    today = now.date().isoformat()
+    pending_date_text = str(state.get("dailyRankingTargetDate") or "")
+    explicit_target = target_date is not None
+    if target_date is None and pending_date_text:
+        try:
+            target_date = date.fromisoformat(pending_date_text)
+        except ValueError:
+            state.pop("dailyRankingTargetDate", None)
+    game_date = target_date or now.date()
+    today = game_date.isoformat()
+    target_changed = False
+    if explicit_target:
+        target_changed = state.get("dailyRankingTargetDate") != today
+        state["dailyRankingTargetDate"] = today
+        if pending_date_text and pending_date_text != today:
+            state.pop("nextDailyRankingCheckAt", None)
     if state.get("dailyRankingSentDate") == today:
+        if state.get("dailyRankingTargetDate") == today:
+            state.pop("dailyRankingTargetDate", None)
+            save_state(settings.state_path, state)
         return True
 
     next_check = _parse_dt(state.get("nextDailyRankingCheckAt"))
     if next_check and now < next_check:
+        if target_changed:
+            save_state(settings.state_path, state)
         return False
 
-    games = client.games_on(now.date())
+    games = client.games_on(game_date)
     if not games:
+        if target_date is not None:
+            state["dailyRankingTargetDate"] = today
         state["nextDailyRankingCheckAt"] = (now + timedelta(seconds=settings.schedule_check_seconds)).isoformat()
         save_state(settings.state_path, state)
         return False
+
+    state["dailyRankingTargetDate"] = today
 
     cancelled_ids = refresh_cancelled_games(client, state, games)
     pending = [game for game in games if not is_terminal_game(game, cancelled_ids)]
@@ -2581,11 +2677,46 @@ def send_daily_rankings_if_all_games_done(
         state["dailyScoresSentDate"] = today
         save_state(settings.state_path, state)
 
-    send_team_rankings(client, telegram, settings)
+    all_postseason_games = [game for game in games if is_postseason_game(game)]
+    postseason_games = [
+        game
+        for game in all_postseason_games
+        if str(game.get("gameId") or "") not in cancelled_ids
+    ]
+    if postseason_games:
+        try:
+            detail = unwrap(
+                client.game_detail(str(postseason_games[-1].get("gameId") or "")),
+                "game",
+            )
+        except Exception:
+            logging.exception("Failed to load postseason series status.")
+            state["nextDailyRankingCheckAt"] = (
+                now + timedelta(seconds=settings.idle_poll_seconds)
+            ).isoformat()
+            save_state(settings.state_path, state)
+            return False
+        if not detail or not is_postseason_game(detail):
+            state["nextDailyRankingCheckAt"] = (
+                now + timedelta(seconds=settings.idle_poll_seconds)
+            ).isoformat()
+            save_state(settings.state_path, state)
+            return False
+        telegram.send_message(format_postseason_series_status(detail))
+    elif not all_postseason_games:
+        send_team_rankings(client, telegram, settings)
     state["dailyRankingSentDate"] = today
+    state.pop("dailyRankingTargetDate", None)
     state.pop("nextDailyRankingCheckAt", None)
     save_state(settings.state_path, state)
-    schedule_kia_highlight_after_rankings(settings, state, now, games, cancelled_ids)
+    schedule_kia_highlight_after_rankings(
+        settings,
+        state,
+        now,
+        games,
+        cancelled_ids,
+        game_date,
+    )
     send_due_kia_highlight(client, telegram, settings, state, now)
     return True
 
@@ -2775,6 +2906,7 @@ def main() -> None:
                     "cancelledGameIds": state.get("cancelledGameIds", []),
                     "dailyScoresSentDate": state.get("dailyScoresSentDate"),
                     "dailyRankingSentDate": state.get("dailyRankingSentDate"),
+                    "dailyRankingTargetDate": state.get("dailyRankingTargetDate"),
                     "nextDailyRankingCheckAt": state.get("nextDailyRankingCheckAt"),
                     "nextPreviewCheckAt": state.get("nextPreviewCheckAt"),
                     "relayStoppedGameId": state.get("relayStoppedGameId"),
@@ -2812,7 +2944,14 @@ def main() -> None:
                         summary,
                         detailed_game,
                     )
-                    send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
+                    send_daily_rankings_if_all_games_done(
+                        client,
+                        telegram,
+                        settings,
+                        state,
+                        now,
+                        game_date_from_summary(summary, settings, now),
+                    )
                     sleep_with_command_polling(client, weather_client, telegram, settings, state, settings.idle_poll_seconds)
                     continue
 
@@ -2821,7 +2960,14 @@ def main() -> None:
                     send_preview_once(client, telegram, settings, state, summary.game_id)
                 after_game_start = is_after_game_start(summary, settings, now)
                 if after_game_start:
-                    send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
+                    send_daily_rankings_if_all_games_done(
+                        client,
+                        telegram,
+                        settings,
+                        state,
+                        now,
+                        game_date_from_summary(summary, settings, now),
+                    )
                 sleep_seconds = seconds_until_next_due(
                     now,
                     seconds_until_pregame(summary, settings, now),
@@ -2898,6 +3044,7 @@ def main() -> None:
                 summary.home_name or "홈",
                 summary.away_code,
                 summary.home_code,
+                summary.is_postseason,
             )
             if game_over and state.get("gameOverSentGameId") != summary.game_id:
                 record_sent = send_game_end_record_once(
@@ -2918,7 +3065,14 @@ def main() -> None:
                 telegram.send_message("경기 종료 알림을 확인했습니다. 오늘도 수고하셨습니다.")
                 state["gameOverSentGameId"] = summary.game_id
                 save_state(settings.state_path, state)
-                send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
+                send_daily_rankings_if_all_games_done(
+                    client,
+                    telegram,
+                    settings,
+                    state,
+                    now,
+                    game_date_from_summary(summary, settings, now),
+                )
                 sleep_seconds = (
                     PITCHING_DECISION_POLL_SECONDS
                     if state.get("pitchingDecisionsSentGameId") != summary.game_id
@@ -2939,7 +3093,14 @@ def main() -> None:
                         int(state.get("homeScore") or 0),
                         kbo_client,
                     )
-                send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
+                send_daily_rankings_if_all_games_done(
+                    client,
+                    telegram,
+                    settings,
+                    state,
+                    now,
+                    game_date_from_summary(summary, settings, now),
+                )
                 sleep_seconds = seconds_until_next_due(
                     now,
                     (

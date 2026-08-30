@@ -10,6 +10,7 @@ from bot import (
     final_score_from_record,
     finish_stopped_relay_game_if_done,
     format_team_schedule,
+    get_cached_today_game,
     handle_telegram_commands,
     include_previous_half_events,
     option_from_callback_data,
@@ -37,6 +38,7 @@ from bot import (
     send_monthly_team_records,
     send_player_record_lookup,
     send_recent_games,
+    should_poll_game,
     with_state_plate_totals,
 )
 from config import Settings
@@ -973,6 +975,86 @@ class KiaNewsScheduleTest(unittest.TestCase):
 
 
 class DailyGameResultsTest(unittest.TestCase):
+    def test_live_postseason_game_remains_in_polling_window_after_six_hours(self):
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+        now = datetime(2026, 10, 31, 0, 40, tzinfo=settings.timezone)
+        summary = SimpleNamespace(
+            start_at=now - timedelta(hours=6),
+            status_code="2",
+        )
+
+        self.assertTrue(should_poll_game(summary, settings, now))
+
+    def test_unfinished_game_is_carried_across_midnight(self):
+        class NoScheduleLookupClient:
+            def games_on(self, day):
+                raise AssertionError("today's schedule must not replace the live game")
+
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+        cached = {
+            "gameId": "77771031HTLG02026",
+            "awayTeamCode": "HT",
+            "homeTeamCode": "LG",
+        }
+        state = {
+            "gameId": cached["gameId"],
+            "scheduleDate": "2026-10-31",
+            "scheduledGame": cached,
+        }
+
+        game = get_cached_today_game(
+            NoScheduleLookupClient(),
+            settings,
+            state,
+            datetime(2026, 11, 1, 0, 20, tzinfo=settings.timezone),
+        )
+
+        self.assertEqual(game, cached)
+
+    def test_suspended_postseason_game_is_kept_after_morning(self):
+        class SuspendedClient:
+            def game_detail(self, game_id):
+                return {
+                    "result": {
+                        "game": {
+                            "gameId": game_id,
+                            "statusCode": "BEFORE",
+                            "suspended": True,
+                            "gameDateTime": "2026-10-31T18:30:00",
+                        }
+                    }
+                }
+
+            def games_on(self, day):
+                raise AssertionError("a suspended game must remain the active game")
+
+        cached = {
+            "gameId": "77771031HTLG02026",
+            "awayTeamCode": "HT",
+            "homeTeamCode": "LG",
+        }
+        state = {
+            "gameId": cached["gameId"],
+            "scheduleDate": "2026-10-31",
+            "scheduledGame": cached,
+        }
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+            )
+            game = get_cached_today_game(
+                SuspendedClient(),
+                settings,
+                state,
+                datetime(2026, 11, 1, 12, 0, tzinfo=settings.timezone),
+            )
+
+        self.assertTrue(game["suspended"])
+        self.assertEqual(game["statusCode"], "BEFORE")
+
     def test_current_score_command_includes_inning_only_for_live_games(self):
         games = [
             {
@@ -1251,6 +1333,92 @@ class DailyGameResultsTest(unittest.TestCase):
         self.assertEqual(state["kiaHighlightSentDate"], "2026-07-24")
         self.assertEqual(state["kiaShortsSentDate"], "2026-07-24")
         self.assertEqual(len(state["kiaShortsSentMediaIds"]), 5)
+
+    @patch("bot.find_tving_kia_highlight", return_value=None)
+    def test_postseason_day_sends_series_record_and_uses_game_date_after_midnight(
+        self,
+        find_highlight,
+    ):
+        game_id = "77771031HTLG02026"
+        games = [
+            {
+                "gameId": game_id,
+                "awayTeamCode": "HT",
+                "homeTeamCode": "LG",
+                "statusCode": "RESULT",
+            }
+        ]
+
+        class PostseasonClient:
+            def __init__(self):
+                self.requested_dates = []
+
+            def games_on(self, day):
+                self.requested_dates.append(day)
+                return games
+
+            def record(self, requested_game_id):
+                self.assert_game_id(requested_game_id)
+                return {
+                    "result": {
+                        "recordData": {
+                            "gameInfo": {"aName": "KIA", "hName": "LG"},
+                            "battersBoxscore": {
+                                "awayTotal": {"run": 4},
+                                "homeTotal": {"run": 2},
+                            },
+                        }
+                    }
+                }
+
+            def game_detail(self, requested_game_id):
+                self.assert_game_id(requested_game_id)
+                return {
+                    "result": {
+                        "game": {
+                            "roundCode": "kbo_ps_ks",
+                            "awayTeamName": "KIA",
+                            "homeTeamName": "LG",
+                            "seriesOutcome": {"away": 4, "home": 2, "draw": 0},
+                        }
+                    }
+                }
+
+            @staticmethod
+            def assert_game_id(requested_game_id):
+                if requested_game_id != game_id:
+                    raise AssertionError(requested_game_id)
+
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="",
+                dry_run=True,
+                state_path=Path(temp_dir) / "state.json",
+                log_path=Path(temp_dir) / "bot.log",
+            )
+            client = PostseasonClient()
+            telegram = FakeTelegram()
+            state = {}
+            sent = send_daily_rankings_if_all_games_done(
+                client,
+                telegram,
+                settings,
+                state,
+                datetime(2026, 11, 1, 0, 20, tzinfo=settings.timezone),
+                date(2026, 10, 31),
+            )
+
+        self.assertTrue(sent)
+        self.assertEqual(client.requested_dates, [date(2026, 10, 31)])
+        self.assertEqual(telegram.messages[0], "오늘의 KBO 경기 결과\nKIA 4 : 2 LG")
+        self.assertEqual(
+            telegram.messages[1],
+            "KBO 한국시리즈 시리즈 전적\nKIA 4승 0무 2패\nLG 2승 0무 4패",
+        )
+        self.assertEqual(state["dailyRankingSentDate"], "2026-10-31")
+        self.assertEqual(state["kiaHighlightDate"], "2026-10-31")
+        find_highlight.assert_called_once_with(date(2026, 10, 31))
 
     @patch("bot.find_tving_kia_highlight", return_value=None)
     def test_missing_highlight_is_retried_ten_minutes_later(self, find_highlight):
