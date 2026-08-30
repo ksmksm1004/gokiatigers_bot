@@ -1320,11 +1320,13 @@ def format_daily_game_results(
     for result in results:
         away_name = result.get("awayName", "원정")
         home_name = result.get("homeName", "홈")
+        result_label = str(result.get("resultLabel") or "").strip()
         if result.get("cancelled"):
-            lines.append(f"{away_name} vs {home_name} | 경기취소")
+            lines.append(f"{away_name} vs {home_name} | {result_label or '경기취소'}")
             continue
         status_text = str(result.get("statusText") or "").strip()
-        suffix = f" ({status_text})" if status_text else ""
+        display_status = result_label or status_text
+        suffix = f" ({display_status})" if display_status else ""
         away_score = result.get("awayScore")
         home_score = result.get("homeScore")
         if away_score is None and home_score is None:
@@ -1542,10 +1544,20 @@ def format_naver_short(short: dict[str, str]) -> str:
     )
 
 
-def format_pitching_decisions(record: dict[str, Any], away_name: str, home_name: str, away_score: int, home_score: int) -> str:
+def format_pitching_decisions(
+    record: dict[str, Any],
+    away_name: str,
+    home_name: str,
+    away_score: int,
+    home_score: int,
+    termination_label: str = "",
+) -> str:
     by_result = _collect_pitching_decisions(record)
     decisions = by_result["승"] + by_result["패"] + by_result["세"] + by_result["홀"]
-    return "\n".join(["중계 | 경기종료", f"{away_name} {away_score} : {home_score} {home_name}", *decisions])
+    title = "중계 | 경기종료"
+    if termination_label:
+        title += f" ({termination_label})"
+    return "\n".join([title, f"{away_name} {away_score} : {home_score} {home_name}", *decisions])
 
 
 def format_pitching_decision_update(record: dict[str, Any]) -> str:

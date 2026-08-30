@@ -8,9 +8,11 @@ from parser import (
     current_player_record,
     expected_batters_message,
     format_batter_summary_stats,
+    format_daily_game_results,
     format_kia_news_articles,
     format_monthly_team_records,
     format_player_record_stats,
+    format_pitching_decisions,
     format_postseason_series_status,
     format_relay_event,
     format_relay_event_with_context,
@@ -33,6 +35,56 @@ from parser import (
     should_send_relay_event,
 )
 from parser import format_preview
+
+
+class DailyGameResultsTest(unittest.TestCase):
+    def test_no_game_replaces_generic_cancellation_text(self):
+        message = format_daily_game_results(
+            [
+                {
+                    "awayName": "LG",
+                    "homeName": "롯데",
+                    "cancelled": True,
+                    "resultLabel": "노게임",
+                }
+            ]
+        )
+
+        self.assertEqual(message, "오늘의 KBO 경기 결과\nLG vs 롯데 | 노게임")
+
+    def test_rain_called_game_keeps_score_and_adds_label(self):
+        message = format_daily_game_results(
+            [
+                {
+                    "awayName": "LG",
+                    "homeName": "삼성",
+                    "awayScore": 6,
+                    "homeScore": 3,
+                    "cancelled": False,
+                    "resultLabel": "강우 콜드게임",
+                }
+            ]
+        )
+
+        self.assertEqual(
+            message,
+            "오늘의 KBO 경기 결과\nLG 6 : 3 삼성 (강우 콜드게임)",
+        )
+
+    def test_kia_game_end_title_can_show_rain_called_game(self):
+        message = format_pitching_decisions(
+            {},
+            "KIA",
+            "삼성",
+            6,
+            3,
+            "강우 콜드게임",
+        )
+
+        self.assertEqual(
+            message,
+            "중계 | 경기종료 (강우 콜드게임)\nKIA 6 : 3 삼성",
+        )
 
 
 class StartingLineupTest(unittest.TestCase):

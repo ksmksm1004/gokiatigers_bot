@@ -160,6 +160,7 @@ TEAM_PITCHER_LABELS = {
 ACTIVE_SCHEDULE_STATUS = {"2", "STARTED", "LIVE", "PLAYING"}
 SUSPENDED_SCHEDULE_STATUS = {"SUSPENDED", "SUSPEND", "PAUSED", "DELAYED"}
 TERMINAL_SCHEDULE_STATUS = {"4", "RESULT", "END", "ENDED", "CANCEL", "CANCELED", "CANCELLED"}
+OFFICIAL_RESULT_STATUS = {"4", "RESULT", "END", "ENDED"}
 PITCHING_DECISION_POLL_SECONDS = 60
 KIA_HIGHLIGHT_RETRY_MINUTES = 10
 KIA_HIGHLIGHT_MAX_ATTEMPTS = 12
@@ -615,6 +616,104 @@ def is_cancelled_game(game: dict[str, Any]) -> bool:
     return bool(game.get("cancel")) or cancel_flag == "Y" or status in {"CANCEL", "CANCELED", "CANCELLED"}
 
 
+def game_termination_label(
+    game: dict[str, Any],
+    record: dict[str, Any] | None = None,
+) -> str:
+    record = record or {}
+    record_game = record.get("gameInfo") or {}
+    combined_game = merge_game_status(game, record_game) if isinstance(record_game, dict) else game
+    explicit = _explicit_cancellation_reason(combined_game)
+    if explicit == "노게임" or "콜드" in explicit:
+        return explicit
+
+    if is_cancelled_game(combined_game):
+        if _game_has_recorded_play(combined_game, record):
+            return "노게임"
+        return explicit or "경기취소"
+
+    if explicit:
+        return explicit
+
+    status = str(combined_game.get("statusCode") or combined_game.get("gameStatus") or "").upper()
+    last_inning = _last_played_inning(combined_game, record)
+    if status in OFFICIAL_RESULT_STATUS and 5 <= last_inning < 9:
+        return "강우 콜드게임"
+    return ""
+
+
+def _game_has_recorded_play(game: dict[str, Any], record: dict[str, Any]) -> bool:
+    inning_rows = [
+        game.get("homeTeamScoreByInning"),
+        game.get("awayTeamScoreByInning"),
+    ]
+    score_innings = (record.get("scoreBoard") or {}).get("inn") or {}
+    if isinstance(score_innings, dict):
+        inning_rows.extend((score_innings.get("home"), score_innings.get("away")))
+    if any(_has_played_inning_value(row) for row in inning_rows):
+        return True
+
+    pitching = record.get("teamPitchingBoxscore") or {}
+    if isinstance(pitching, dict):
+        for side in ("home", "away"):
+            stats = pitching.get(side) or {}
+            if isinstance(stats, dict) and _innings_number(stats.get("inn")) > 0:
+                return True
+    return False
+
+
+def _has_played_inning_value(values: Any) -> bool:
+    if isinstance(values, dict):
+        iterable = values.values()
+    elif isinstance(values, (list, tuple)):
+        iterable = values
+    else:
+        return False
+    return any(str(value).strip() not in {"", "-", "None"} for value in iterable)
+
+
+def _last_played_inning(game: dict[str, Any], record: dict[str, Any]) -> int:
+    last_inning = 0
+    inning_rows = [
+        game.get("homeTeamScoreByInning"),
+        game.get("awayTeamScoreByInning"),
+    ]
+    score_innings = (record.get("scoreBoard") or {}).get("inn") or {}
+    if isinstance(score_innings, dict):
+        inning_rows.extend((score_innings.get("home"), score_innings.get("away")))
+    for values in inning_rows:
+        if isinstance(values, dict):
+            for key, value in values.items():
+                if str(value).strip() in {"", "-", "None"}:
+                    continue
+                match = re.search(r"\d+", str(key))
+                if match:
+                    last_inning = max(last_inning, int(match.group()))
+        elif isinstance(values, (list, tuple)):
+            for index, value in enumerate(values, start=1):
+                if str(value).strip() not in {"", "-", "None"}:
+                    last_inning = max(last_inning, index)
+
+    for value in (record.get("currentInning"), game.get("currentInning"), game.get("statusInfo")):
+        match = re.search(r"\d+", str(value or ""))
+        if match:
+            last_inning = max(last_inning, int(match.group()))
+    return last_inning
+
+
+def _innings_number(value: Any) -> float:
+    if value in (None, "", "-"):
+        return 0.0
+    text = str(value).strip()
+    mixed = re.match(r"^(\d+)\s+([⅓⅔])$", text)
+    if mixed:
+        return float(mixed.group(1)) + (1 / 3 if mixed.group(2) == "⅓" else 2 / 3)
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
 def send_cancelled_once(
     client: NaverSportsClient,
     weather_client: NaverWeatherClient,
@@ -634,8 +733,9 @@ def send_cancelled_once(
         stadium,
         game,
     )
+    notice_type = "노게임" if reason == "노게임" else "취소"
     lines = [
-        "KIA 경기 취소",
+        f"KIA 경기 {notice_type}",
         f"{summary.away_name or game.get('aName', '원정')} vs {summary.home_name or game.get('hName', '홈')}",
         f"{stadium} {reason}".strip(),
     ]
@@ -657,12 +757,30 @@ def resolve_cancellation_reason(
 ) -> str:
     reason = _explicit_cancellation_reason(game)
     detailed_game: dict[str, Any] = {}
-    if not reason:
+    if reason not in {"노게임", "강우 콜드게임"}:
         try:
             detailed_game = unwrap(client.game_detail(game_id), "game")
-            reason = _explicit_cancellation_reason(detailed_game)
+            detailed_reason = _explicit_cancellation_reason(detailed_game)
+            if detailed_reason:
+                reason = detailed_reason
         except Exception:
             logging.exception("Failed to fetch cancellation details for %s.", game_id)
+    if reason in {"노게임", "강우 콜드게임"}:
+        return reason
+
+    termination_game = merge_game_status(game, detailed_game)
+    if game_termination_label(termination_game) == "노게임":
+        return "노게임"
+
+    record_method = getattr(client, "record", None)
+    if callable(record_method):
+        try:
+            record = unwrap(record_method(game_id), "recordData")
+            if game_termination_label(termination_game, record) == "노게임":
+                return "노게임"
+        except Exception:
+            logging.exception("Failed to inspect cancelled game record for %s.", game_id)
+
     if reason:
         return reason
 
@@ -699,6 +817,12 @@ def _explicit_cancellation_reason(game: dict[str, Any]) -> str:
     for key in keys:
         text = str(game.get(key) or "").strip()
         normalized = text.replace(" ", "")
+        if "노게임" in normalized:
+            return "노게임"
+        if "콜드" in normalized:
+            if any(word in normalized for word in ("우천", "강우", "호우")):
+                return "강우 콜드게임"
+            return text
         if "폭염" in normalized:
             return "폭염 취소"
         if any(word in normalized for word in ("우천", "강우", "호우")):
@@ -1224,13 +1348,23 @@ def fetch_current_game_results(
             or TEAM_NAMES.get(home_code, home_code or "홈")
         )
         cancelled = is_cancelled_game(current_game)
+        status = str(current_game.get("statusCode") or current_game.get("gameStatus") or "").upper()
+        record: dict[str, Any] = {}
+        record_method = getattr(client, "record", None)
+        if game_id and callable(record_method) and (cancelled or status in OFFICIAL_RESULT_STATUS):
+            try:
+                record = unwrap(record_method(game_id), "recordData")
+            except Exception:
+                logging.exception("Failed to inspect game termination for %s.", game_id)
+        result_label = game_termination_label(current_game, record)
         result: dict[str, Any] = {
             "awayName": away_name,
             "homeName": home_name,
             "cancelled": cancelled,
         }
+        if cancelled:
+            result["resultLabel"] = result_label or "경기취소"
         if not cancelled:
-            status = str(current_game.get("statusCode") or current_game.get("gameStatus") or "").upper()
             if status not in {"BEFORE", "SCHEDULED", "READY"}:
                 away_score = _optional_score_from_game(current_game, "away")
                 home_score = _optional_score_from_game(current_game, "home")
@@ -1241,6 +1375,8 @@ def fetch_current_game_results(
             result["statusText"] = (
                 current_game_status_text(current_game) if detail else "정보 확인 중"
             )
+            if result_label:
+                result["resultLabel"] = result_label
         results.append(result)
     return results
 
@@ -2172,7 +2308,15 @@ def send_game_end_record_once(
         return False
     away_score, home_score = final_score_from_record(record, away_score, home_score)
     decisions_ready = pitching_decisions_ready(record, away_score, home_score)
-    decisions = format_pitching_decisions(record, away_name, home_name, away_score, home_score)
+    termination_label = game_termination_label({}, record)
+    decisions = format_pitching_decisions(
+        record,
+        away_name,
+        home_name,
+        away_score,
+        home_score,
+        termination_label,
+    )
     if record_already_sent:
         if not decisions_ready:
             logging.info("Pitching decisions are not ready for %s. Will retry later.", game_id)
@@ -2736,7 +2880,19 @@ def fetch_daily_game_results(
         status = str(game.get("statusCode") or "").upper()
         cancelled = game_id in cancelled_ids or status in {"CANCEL", "CANCELED", "CANCELLED"}
         if cancelled:
-            results.append({"awayName": away_name, "homeName": home_name, "cancelled": True})
+            record: dict[str, Any] = {}
+            try:
+                record = unwrap(client.record(game_id), "recordData")
+            except Exception:
+                logging.exception("Failed to inspect cancelled game %s.", game_id)
+            results.append(
+                {
+                    "awayName": away_name,
+                    "homeName": home_name,
+                    "cancelled": True,
+                    "resultLabel": game_termination_label(game, record) or "경기취소",
+                }
+            )
             continue
 
         try:
@@ -2755,15 +2911,17 @@ def fetch_daily_game_results(
         if away_score < 0 or home_score < 0:
             logging.info("Final score is not ready for %s. Will retry later.", game_id)
             return None
-        results.append(
-            {
-                "awayName": away_name,
-                "homeName": home_name,
-                "awayScore": away_score,
-                "homeScore": home_score,
-                "cancelled": False,
-            }
-        )
+        result = {
+            "awayName": away_name,
+            "homeName": home_name,
+            "awayScore": away_score,
+            "homeScore": home_score,
+            "cancelled": False,
+        }
+        result_label = game_termination_label(game, record)
+        if result_label:
+            result["resultLabel"] = result_label
+        results.append(result)
     return results
 
 

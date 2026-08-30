@@ -7,10 +7,12 @@ from unittest.mock import patch
 
 from bot import (
     dispatch_relay_events,
+    fetch_daily_game_results,
     final_score_from_record,
     finish_stopped_relay_game_if_done,
     format_team_schedule,
     get_cached_today_game,
+    game_termination_label,
     handle_telegram_commands,
     include_previous_half_events,
     option_from_callback_data,
@@ -892,6 +894,90 @@ class CancellationReasonTest(unittest.TestCase):
 
         self.assertEqual(reason, "우천 취소")
 
+    def test_cancelled_game_with_played_innings_is_no_game(self):
+        weather = self.WeatherClient({"wetrTxt": "비", "oneHourRainAmt": "15"})
+
+        reason = resolve_cancellation_reason(
+            self.Client(
+                {
+                    "statusInfo": "경기취소",
+                    "cancelReason": "우천으로 경기취소",
+                    "cancel": True,
+                    "homeTeamScoreByInning": ["0", "0", "0", "-"],
+                    "awayTeamScoreByInning": ["0", "0", "2", "-"],
+                }
+            ),
+            weather,
+            "game1",
+            "사직",
+            {"cancelFlag": "Y"},
+        )
+
+        self.assertEqual(reason, "노게임")
+        self.assertEqual(weather.calls, 0)
+
+    def test_official_result_before_ninth_is_rain_called_game(self):
+        label = game_termination_label(
+            {"statusCode": "RESULT"},
+            {
+                "currentInning": "7",
+                "scoreBoard": {
+                    "inn": {
+                        "away": [0, 0, 1, 0, 3, 0, 2],
+                        "home": [1, 1, 0, 1, 0, 0, 0],
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(label, "강우 콜드게임")
+
+    def test_daily_cancelled_game_with_boxscore_is_labeled_no_game(self):
+        class NoGameClient:
+            def record(self, game_id):
+                return {
+                    "result": {
+                        "recordData": {
+                            "gameInfo": {"cancelFlag": "Y", "statusCode": "2"},
+                            "scoreBoard": {
+                                "inn": {
+                                    "away": [0, 0, 2],
+                                    "home": [0, 0, 0],
+                                }
+                            },
+                            "teamPitchingBoxscore": {
+                                "away": {"inn": "2"},
+                                "home": {"inn": "3"},
+                            },
+                        }
+                    }
+                }
+
+        results = fetch_daily_game_results(
+            NoGameClient(),
+            [
+                {
+                    "gameId": "game1",
+                    "awayTeamCode": "LG",
+                    "homeTeamCode": "LT",
+                    "statusCode": "BEFORE",
+                }
+            ],
+            {"game1"},
+        )
+
+        self.assertEqual(
+            results,
+            [
+                {
+                    "awayName": "LG",
+                    "homeName": "롯데",
+                    "cancelled": True,
+                    "resultLabel": "노게임",
+                }
+            ],
+        )
+
 
 class KiaNewsScheduleTest(unittest.TestCase):
     def test_game_end_record_schedules_and_sends_kia_news(self):
@@ -1185,6 +1271,51 @@ class DailyGameResultsTest(unittest.TestCase):
         self.assertEqual(
             telegram.messages[0],
             "현재 KBO 경기 결과\nKIA vs 키움 (정보 확인 중)",
+        )
+
+    def test_current_score_labels_a_started_then_cancelled_game_as_no_game(self):
+        class ScoreClient:
+            def games_on(self, day):
+                return [
+                    {
+                        "gameId": "game1",
+                        "awayTeamCode": "LG",
+                        "homeTeamCode": "LT",
+                        "statusCode": "BEFORE",
+                    }
+                ]
+
+            def game_detail(self, game_id):
+                return {
+                    "result": {
+                        "game": {
+                            "awayTeamName": "LG",
+                            "homeTeamName": "롯데",
+                            "statusCode": "BEFORE",
+                            "statusInfo": "경기취소",
+                            "cancel": True,
+                            "awayTeamScoreByInning": ["0", "0", "2", "-"],
+                            "homeTeamScoreByInning": ["0", "0", "0", "-"],
+                        }
+                    }
+                }
+
+            def record(self, game_id):
+                return {"result": {"recordData": {}}}
+
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+
+        send_current_kbo_scores(
+            ScoreClient(),
+            telegram,
+            settings,
+            datetime(2026, 8, 30, 21, 0, tzinfo=settings.timezone),
+        )
+
+        self.assertEqual(
+            telegram.messages[0],
+            "현재 KBO 경기 결과\nLG vs 롯데 | 노게임",
         )
 
     @patch(
