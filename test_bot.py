@@ -872,10 +872,12 @@ class CancellationReasonTest(unittest.TestCase):
         self.assertEqual(reason, "폭염 취소")
         self.assertEqual(weather.calls, 0)
 
-    def test_clear_or_zero_rain_weather_means_heat_cancellation(self):
+    def test_high_temperature_without_rain_means_heat_cancellation(self):
         reason = resolve_cancellation_reason(
             self.Client(),
-            self.WeatherClient({"wetrTxt": "맑음", "oneHourRainAmt": "0.0"}),
+            self.WeatherClient(
+                {"wetrTxt": "맑음", "oneHourRainAmt": "0.0", "tmpr": "36.2"}
+            ),
             "game1",
             "창원",
             {"cancelFlag": "Y"},
@@ -893,6 +895,50 @@ class CancellationReasonTest(unittest.TestCase):
         )
 
         self.assertEqual(reason, "우천 취소")
+
+    def test_zero_current_rain_at_normal_temperature_is_not_assumed_to_be_heat(self):
+        reason = resolve_cancellation_reason(
+            self.Client(),
+            self.WeatherClient(
+                {"wetrTxt": "구름많음", "oneHourRainAmt": "0.0", "tmpr": "26.3"}
+            ),
+            "20260903HTNC02026",
+            "창원",
+            {"cancelFlag": "Y"},
+        )
+
+        self.assertEqual(reason, "경기 취소")
+
+    def test_kbo_official_reason_takes_priority_over_current_weather(self):
+        weather = self.WeatherClient(
+            {"wetrTxt": "구름많음", "oneHourRainAmt": "0.0", "tmpr": "26.3"}
+        )
+
+        class KBOClient:
+            def game_cancellation_reason(self, game_date, away_team, home_team):
+                self.args = (game_date, away_team, home_team)
+                return "우천취소"
+
+        kbo_client = KBOClient()
+        reason = resolve_cancellation_reason(
+            self.Client(
+                {
+                    "statusInfo": "경기취소",
+                    "cancel": True,
+                    "awayTeamName": "KIA",
+                    "homeTeamName": "NC",
+                }
+            ),
+            weather,
+            "20260903HTNC02026",
+            "창원",
+            {"cancelFlag": "Y"},
+            kbo_client,
+        )
+
+        self.assertEqual(reason, "우천 취소")
+        self.assertEqual(kbo_client.args, (date(2026, 9, 3), "KIA", "NC"))
+        self.assertEqual(weather.calls, 0)
 
     def test_cancelled_game_with_played_innings_is_no_game(self):
         weather = self.WeatherClient({"wetrTxt": "비", "oneHourRainAmt": "15"})

@@ -722,6 +722,7 @@ def send_cancelled_once(
     state: dict[str, Any],
     summary,
     game: dict[str, Any],
+    kbo_client: KBOPlayerClient | None = None,
 ) -> None:
     if state.get("cancelSentGameId") == summary.game_id:
         return
@@ -732,6 +733,7 @@ def send_cancelled_once(
         summary.game_id,
         stadium,
         game,
+        kbo_client,
     )
     notice_type = "노게임" if reason == "노게임" else "취소"
     lines = [
@@ -754,6 +756,7 @@ def resolve_cancellation_reason(
     game_id: str,
     stadium: str,
     game: dict[str, Any],
+    kbo_client: KBOPlayerClient | None = None,
 ) -> str:
     reason = _explicit_cancellation_reason(game)
     detailed_game: dict[str, Any] = {}
@@ -781,6 +784,19 @@ def resolve_cancellation_reason(
         except Exception:
             logging.exception("Failed to inspect cancelled game record for %s.", game_id)
 
+    game_date = _game_date_for_cancellation(game_id, termination_game)
+    if kbo_client is not None and game_date is not None:
+        try:
+            official_reason = kbo_client.game_cancellation_reason(
+                game_date,
+                str(termination_game.get("awayTeamName") or termination_game.get("aName") or ""),
+                str(termination_game.get("homeTeamName") or termination_game.get("hName") or ""),
+            )
+            if official_reason:
+                return _explicit_cancellation_reason({"reason": official_reason}) or official_reason
+        except Exception:
+            logging.exception("Failed to fetch KBO cancellation reason for %s.", game_id)
+
     if reason:
         return reason
 
@@ -798,9 +814,22 @@ def resolve_cancellation_reason(
 
     if _is_rain_weather(weather_text) or _positive_rain_amount(rain_amount):
         return "우천 취소"
-    if "맑음" in weather_text or _zero_rain_amount(rain_amount):
+    temperature = _rain_amount_number(conditions.get("tmpr"))
+    if "폭염" in weather_text or (temperature is not None and temperature >= 35):
         return "폭염 취소"
     return "경기 취소"
+
+
+def _game_date_for_cancellation(game_id: str, game: dict[str, Any]) -> date | None:
+    candidates = [game.get("gameDate"), game.get("gdate"), game_id[:8]]
+    for value in candidates:
+        text = str(value or "").strip()
+        for date_format in ("%Y-%m-%d", "%Y%m%d"):
+            try:
+                return datetime.strptime(text, date_format).date()
+            except ValueError:
+                continue
+    return None
 
 
 def _explicit_cancellation_reason(game: dict[str, Any]) -> str:
@@ -846,11 +875,6 @@ def _rain_amount_number(value: Any) -> float | None:
 def _positive_rain_amount(value: Any) -> bool:
     amount = _rain_amount_number(value)
     return amount is not None and amount > 0
-
-
-def _zero_rain_amount(value: Any) -> bool:
-    amount = _rain_amount_number(value)
-    return amount == 0
 
 
 def send_preview_once(
@@ -3101,6 +3125,7 @@ def main() -> None:
                         state,
                         summary,
                         detailed_game,
+                        kbo_client,
                     )
                     send_daily_rankings_if_all_games_done(
                         client,

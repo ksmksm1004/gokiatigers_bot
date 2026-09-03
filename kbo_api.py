@@ -291,6 +291,31 @@ class KBOPlayerClient:
         )
         return parse_schedule_results(response.json(), season)
 
+    def game_cancellation_reason(
+        self,
+        game_date: date,
+        away_team: str = "",
+        home_team: str = "",
+        team_id: str = "HT",
+    ) -> str:
+        response = self._request(
+            "post",
+            KBO_SCHEDULE_URL,
+            data={
+                "leId": 1,
+                "srIdList": KBO_FIRST_TEAM_SERIES_IDS,
+                "seasonId": game_date.year,
+                "gameMonth": f"{game_date.month:02d}",
+                "teamId": team_id,
+            },
+        )
+        return parse_schedule_cancellation_reason(
+            response.json(),
+            game_date,
+            away_team,
+            home_team,
+        )
+
     def game_milestones(self, record: dict[str, Any], team_code: str = "HT") -> list[str]:
         info = record.get("gameInfo") or {}
         game_date = _game_date(info.get("gdate"))
@@ -875,6 +900,59 @@ def parse_schedule_results(payload: dict[str, Any], season: int) -> list[KBOGame
             )
         )
     return sorted(games, key=lambda game: game.game_date)
+
+
+def parse_schedule_cancellation_reason(
+    payload: dict[str, Any],
+    target_date: date,
+    away_team: str = "",
+    home_team: str = "",
+) -> str:
+    current_date: date | None = None
+    expected_away = _normalize_name(_short_team_name(away_team)).casefold()
+    expected_home = _normalize_name(_short_team_name(home_team)).casefold()
+
+    for item in payload.get("rows") or []:
+        cells = item.get("row") or []
+        day_text = next(
+            (str(cell.get("Text") or "") for cell in cells if cell.get("Class") == "day"),
+            "",
+        )
+        day_match = re.search(r"(\d{1,2})\.(\d{1,2})", day_text)
+        if day_match:
+            try:
+                current_date = date(target_date.year, int(day_match.group(1)), int(day_match.group(2)))
+            except ValueError:
+                current_date = None
+        if current_date != target_date:
+            continue
+
+        play_html = next(
+            (str(cell.get("Text") or "") for cell in cells if cell.get("Class") == "play"),
+            "",
+        )
+        play_parser = _FragmentTextParser()
+        play_parser.feed(play_html)
+        teams = [part for part in play_parser.parts if part.lower() != "vs"]
+        if len(teams) >= 2:
+            row_away = _normalize_name(_short_team_name(teams[0])).casefold()
+            row_home = _normalize_name(_short_team_name(teams[-1])).casefold()
+            if expected_away and row_away != expected_away:
+                continue
+            if expected_home and row_home != expected_home:
+                continue
+
+        for cell in reversed(cells):
+            parser = _FragmentTextParser()
+            parser.feed(str(cell.get("Text") or ""))
+            text = _clean_text(" ".join(parser.parts))
+            normalized = _normalize_name(text)
+            if any(
+                marker in normalized
+                for marker in ("취소", "노게임", "콜드", "그라운드사정", "시설문제")
+            ):
+                return text
+    return ""
 
 
 def format_head_to_head_results(

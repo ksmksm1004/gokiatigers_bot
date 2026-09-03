@@ -12,6 +12,7 @@ from kbo_api import (
     format_player_record,
     format_recent_series_results,
     parse_expected_record_candidate,
+    parse_schedule_cancellation_reason,
     parse_schedule_results,
     parse_pitcher_season_hbp,
     parse_player_basic_page,
@@ -229,6 +230,53 @@ class KBOScheduleResultTest(unittest.TestCase):
                 "srIdList": "0,9,6,3,4,5,7",
                 "seasonId": 2026,
                 "gameMonth": "",
+                "teamId": "HT",
+            },
+        )
+
+    def test_parses_official_cancellation_reason_for_matching_game(self):
+        cancelled = schedule_row(
+            "20260903",
+            "<span>KIA</span><em><span>vs</span></em><span>NC</span>",
+            completed=False,
+        )
+        cancelled["row"].append({"Text": "우천취소", "Class": None})
+
+        reason = parse_schedule_cancellation_reason(
+            {"rows": [cancelled]},
+            date(2026, 9, 3),
+            "KIA 타이거즈",
+            "NC 다이노스",
+        )
+
+        self.assertEqual(reason, "우천취소")
+
+    def test_client_requests_only_the_cancellation_month(self):
+        cancelled = schedule_row(
+            "20260903",
+            "<span>KIA</span><em><span>vs</span></em><span>NC</span>",
+            completed=False,
+        )
+        cancelled["row"].append({"Text": "우천취소", "Class": None})
+        response = Mock()
+        response.json.return_value = {"rows": [cancelled]}
+        client = KBOPlayerClient()
+        client._request = Mock(return_value=response)
+
+        reason = client.game_cancellation_reason(
+            date(2026, 9, 3),
+            "KIA",
+            "NC",
+        )
+
+        self.assertEqual(reason, "우천취소")
+        self.assertEqual(
+            client._request.call_args.kwargs["data"],
+            {
+                "leId": 1,
+                "srIdList": "0,9,6,3,4,5,7",
+                "seasonId": 2026,
+                "gameMonth": "09",
                 "teamId": "HT",
             },
         )
