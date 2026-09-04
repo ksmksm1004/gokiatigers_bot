@@ -23,6 +23,7 @@ from naver_weather import NaverWeatherClient
 from parser import (
     RelayEvent,
     apply_postseason_relay_stats,
+    completed_plate_state,
     current_player_record,
     expected_batters_message,
     find_previous_plate_event,
@@ -54,6 +55,7 @@ from parser import (
     is_kia_batter_event,
     is_kia_pitching,
     is_postseason_game,
+    is_walk_event,
     kia_half_summary_message,
     opponent_half_summary_message,
     lineup_media_items,
@@ -1840,6 +1842,7 @@ def dispatch_relay_events(
         if is_kia_batting(event, home_code, away_code, settings.team_code):
             remember_plate_rbi_baseline(state, event)
             if is_batter_result_event(event):
+                player_record = with_forced_walk_rbi(state, event, player_record, all_events)
                 remember_plate_result(state, event, player_record)
             remember_plate_score(state, event)
 
@@ -1897,7 +1900,16 @@ def dispatch_relay_events(
         previous_plate = find_previous_plate_event(all_events, event)
         player_record = with_state_plate_totals(player_record, state_plate_results(state, event.batter_code))
         plate_results = state_plate_labels(state, event.batter_code) or plate_result_history(all_events, event, player_record)
-        message = format_relay_event_with_context(event, away_name, home_name, previous_plate, player_record, plate_results)
+        base_state = completed_plate_state(all_events, event) if is_batter_result_event(event) else None
+        message = format_relay_event_with_context(
+            event,
+            away_name,
+            home_name,
+            previous_plate,
+            player_record,
+            plate_results,
+            base_state,
+        )
         photo = None
         if (
             event.is_pitching_change
@@ -1913,6 +1925,37 @@ def dispatch_relay_events(
         else:
             telegram.send_message(message)
     return sent_summaries
+
+
+def with_forced_walk_rbi(
+    state: dict[str, Any],
+    event: RelayEvent,
+    player_record: dict[str, Any],
+    events: list[RelayEvent],
+) -> dict[str, Any]:
+    if not event.batter_code or not is_walk_event(event):
+        return player_record
+
+    forced_runs = 0
+    for candidate in sorted(events, key=lambda item: item.event_id):
+        if candidate.event_id <= event.event_id:
+            continue
+        if (
+            candidate.inning != event.inning
+            or candidate.half != event.half
+            or candidate.title != event.title
+        ):
+            break
+        if candidate.is_score_event and not is_batter_result_event(candidate):
+            forced_runs += 1
+    if not forced_runs:
+        return player_record
+
+    batter_totals = (state.get("plateResultTotals") or {}).get(str(event.batter_code), {})
+    completed_rbi = _int_like(batter_totals.get("rbi"))
+    adjusted = player_record.copy()
+    adjusted["rbi"] = max(_int_like(player_record.get("rbi")), completed_rbi + forced_runs)
+    return adjusted
 
 
 def remember_plate_result(state: dict[str, Any], event, player_record: dict[str, Any]) -> None:

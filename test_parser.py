@@ -5,6 +5,7 @@ from parser import (
     RelayEvent,
     apply_postseason_relay_stats,
     changed_pitcher_lines,
+    completed_plate_state,
     current_player_record,
     expected_batters_message,
     format_batter_summary_stats,
@@ -428,6 +429,36 @@ class MonthlyTeamRecordTest(unittest.TestCase):
 
 
 class HalfOutSummaryTest(unittest.TestCase):
+    def test_line_drive_and_non_sacrifice_bunt_have_specific_out_labels(self):
+        events = [
+            RelayEvent(
+                1,
+                4,
+                "말",
+                "김태군 : 유격수 라인드라이브 아웃",
+                0,
+                0,
+                batter_code="78122",
+                current_state={"out": "1"},
+            ),
+            RelayEvent(
+                2,
+                4,
+                "말",
+                "권동진 : 1루수 번트 아웃 (1루수 1루 터치아웃)",
+                0,
+                0,
+                batter_code="50000",
+                current_state={"out": "2"},
+            ),
+        ]
+
+        results = half_out_results(events, 4, "말")
+
+        self.assertEqual([result.tagged_label for result in results], ["직선타1", "번트2"])
+        self.assertEqual(plate_result_history(events, events[0]), ["직선타"])
+        self.assertEqual(plate_result_history(events, events[1]), ["번트"])
+
     def test_kia_half_summary_ignores_stale_batter_on_attack_start_marker(self):
         events = [
             RelayEvent(
@@ -927,6 +958,58 @@ class CompactBatterFormatTest(unittest.TestCase):
         message = format_relay_event(event, "KT", "KIA")
 
         self.assertEqual(message.splitlines()[2], "김도영 : 중견수 플라이 아웃")
+
+    def test_relay_batter_result_uses_last_state_from_same_plate(self):
+        hit = RelayEvent(
+            event_id=471,
+            inning=8,
+            half="말",
+            text="한준수 : 우익수 오른쪽 2루타",
+            home_score=1,
+            away_score=2,
+            title="8번타자 한준수",
+            current_state={"out": "2", "base1": "6", "base2": "8", "base3": "3"},
+        )
+        tag_out = RelayEvent(
+            event_id=473,
+            inning=8,
+            half="말",
+            text="3루주자 정현창 : 태그아웃",
+            home_score=1,
+            away_score=2,
+            title="8번타자 한준수",
+            current_state={"out": "3", "base1": "0", "base2": "8", "base3": "0"},
+        )
+        score = RelayEvent(
+            event_id=475,
+            inning=8,
+            half="말",
+            text="3루주자 김도영 : 홈인",
+            home_score=3,
+            away_score=2,
+            title="8번타자 한준수",
+            current_state={"out": "3", "base1": "0", "base2": "8", "base3": "0"},
+        )
+
+        state = completed_plate_state([hit, tag_out, score], hit)
+        message = format_relay_event_with_context(hit, "KT", "KIA", base_state=state)
+
+        self.assertEqual(message.splitlines()[2], "한준수 : 우익수 오른쪽 2루타 (2루)")
+
+    def test_runner_steal_includes_occupied_bases_after_move(self):
+        event = RelayEvent(
+            event_id=585,
+            inning=9,
+            half="말",
+            text="1루주자 김도영 : 도루로 2루까지 진루",
+            home_score=3,
+            away_score=3,
+            current_state={"out": "2", "base1": "0", "base2": "3", "base3": "9"},
+        )
+
+        message = format_relay_event(event, "KT", "KIA")
+
+        self.assertEqual(message.splitlines()[2], "1루주자 김도영 : 도루로 2루까지 진루 (2,3루)")
 
     def test_runner_score_event_does_not_use_stale_base_state(self):
         event = RelayEvent(

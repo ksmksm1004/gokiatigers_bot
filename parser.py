@@ -462,8 +462,17 @@ def is_steal_event(event: RelayEvent) -> bool:
 def is_batter_out_event(event: RelayEvent) -> bool:
     return any(
         word in event.text
-        for word in ("삼진", "스트라이크 낫 아웃", "땅볼", "플라이", "뜬공", "직선타", "병살타")
-    )
+        for word in (
+            "삼진",
+            "스트라이크 낫 아웃",
+            "땅볼",
+            "플라이",
+            "뜬공",
+            "직선타",
+            "라인드라이브",
+            "병살타",
+        )
+    ) or ("번트" in event.text and "아웃" in event.text)
 
 
 def should_send_relay_event(event: RelayEvent, home_code: str, away_code: str, team_code: str = KIA_CODE) -> bool:
@@ -670,6 +679,22 @@ def find_previous_plate_event(events: list[RelayEvent], event: RelayEvent) -> Re
     return None
 
 
+def completed_plate_state(events: list[RelayEvent], event: RelayEvent) -> dict[str, Any]:
+    state = event.current_state or {}
+    for candidate in sorted(events, key=lambda item: item.event_id):
+        if candidate.event_id <= event.event_id:
+            continue
+        if (
+            candidate.inning != event.inning
+            or candidate.half != event.half
+            or candidate.title != event.title
+        ):
+            break
+        if candidate.current_state:
+            state = candidate.current_state
+    return state
+
+
 def relay_player_record(relay: dict[str, Any], event: RelayEvent) -> dict[str, Any]:
     if not event.batter_code:
         return {}
@@ -723,9 +748,18 @@ def format_relay_event_with_context(
     previous_plate_event: RelayEvent | None = None,
     player_record: dict[str, Any] | None = None,
     plate_results: list[str] | None = None,
+    base_state: dict[str, Any] | None = None,
 ) -> str:
     show_player_stats = is_batter_result_event(event)
-    text = format_relay_event(event, away_name, home_name, player_record, plate_results, show_player_stats)
+    text = format_relay_event(
+        event,
+        away_name,
+        home_name,
+        player_record,
+        plate_results,
+        show_player_stats,
+        base_state,
+    )
     if event.is_score_event and not is_batter_result_event(event) and previous_plate_event and previous_plate_event.text not in text:
         lines = text.splitlines()
         insert_at = 2 if len(lines) >= 2 else len(lines)
@@ -975,13 +1009,14 @@ def format_relay_event(
     player_record: dict[str, Any] | None = None,
     plate_results: list[str] | None = None,
     show_player_stats: bool = True,
+    base_state: dict[str, Any] | None = None,
 ) -> str:
     prefix = "득점" if event.is_score_event else "교체" if event.is_pitching_change else "중계"
     out_count = _relay_out_count(event)
     out_text = f" ({out_count} out)" if out_count is not None and not event.is_attack_start else ""
     play_text = event.text
-    if is_batter_result_event(event):
-        base_label = _base_occupancy_label(event)
+    if is_batter_result_event(event) or (is_runner_event(event) and is_steal_event(event)):
+        base_label = _base_occupancy_label(event, base_state)
         if base_label:
             play_text = f"{play_text} ({base_label})"
     lines = [
@@ -1012,8 +1047,8 @@ def _relay_out_count(event: RelayEvent) -> int | None:
     return out_count if 0 <= out_count <= 3 else None
 
 
-def _base_occupancy_label(event: RelayEvent) -> str:
-    state = event.current_state or {}
+def _base_occupancy_label(event: RelayEvent, base_state: dict[str, Any] | None = None) -> str:
+    state = base_state if base_state is not None else event.current_state or {}
     occupied = [base for base in (1, 2, 3) if _to_int(state.get(f"base{base}"))]
     if len(occupied) == 3:
         return "만루"
@@ -1046,8 +1081,10 @@ def _out_result_label(event: RelayEvent) -> str:
         return "땅볼"
     if "플라이" in text or "뜬공" in text:
         return "플라이"
-    if "직선타" in text:
+    if "직선타" in text or "라인드라이브" in text:
         return "직선타"
+    if "번트" in text and "아웃" in text:
+        return "번트"
     if "주루사" in text:
         return "주루사"
     if "아웃" in text:
@@ -1155,8 +1192,10 @@ def _plate_result_label(event: RelayEvent | None, player: dict[str, Any]) -> str
         label = "땅볼"
     elif "플라이" in text or "뜬공" in text:
         label = "플라이"
-    elif "직선타" in text:
+    elif "직선타" in text or "라인드라이브" in text:
         label = "직선타"
+    elif "번트" in text and "아웃" in text:
+        label = "번트"
     elif "도루" in text and "실패" not in text:
         label = "도루"
 

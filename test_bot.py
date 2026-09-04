@@ -3014,6 +3014,70 @@ class KiaHalfSummaryTest(unittest.TestCase):
 
 
 class RelayPlateHistoryStateTest(unittest.TestCase):
+    def test_dispatch_infers_rbi_for_a_bases_loaded_walk_before_api_stats_update(self):
+        relay = {
+            "homeLineup": {
+                "batter": [
+                    {
+                        "pcode": "68504",
+                        "name": "이호연",
+                        "batOrder": 6,
+                        "seasonHra": "0.256",
+                        "ab": 3,
+                        "hit": 1,
+                        "bb": 1,
+                        "rbi": 0,
+                    }
+                ]
+            }
+        }
+        walk = RelayEvent(
+            event_id=458,
+            inning=8,
+            half="말",
+            text="이호연 : 볼넷",
+            home_score=0,
+            away_score=2,
+            title="6번타자 이호연",
+            batter_code="68504",
+            player_code="68504",
+            player_name="이호연",
+            home_or_away="1",
+            current_state={"out": "1", "base1": "6", "base2": "5", "base3": "3"},
+        )
+        score = RelayEvent(
+            event_id=461,
+            inning=8,
+            half="말",
+            text="3루주자 카스트로 : 홈인",
+            home_score=1,
+            away_score=2,
+            title="6번타자 이호연",
+            batter_code="68504",
+            home_or_away="1",
+            current_state={"out": "1", "base1": "6", "base2": "5", "base3": "3"},
+        )
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+        telegram = FakeTelegram()
+        state = {"plateResultTotals": {"68504": {"rbi": 0}}}
+
+        dispatch_relay_events(
+            telegram,
+            settings,
+            state,
+            relay,
+            [walk, score],
+            [walk, score],
+            set(),
+            "KT",
+            "KIA",
+            "KT",
+            "HT",
+        )
+
+        self.assertEqual(state["plateResultHistories"]["68504"][0]["label"], "볼넷(타점1)")
+        self.assertIn("볼넷(타점1)", telegram.messages[0])
+
     def test_existing_cumulative_rbi_is_not_attached_without_baseline(self):
         event = SimpleNamespace(
             event_id=261,
