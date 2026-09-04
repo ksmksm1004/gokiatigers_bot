@@ -889,6 +889,60 @@ class CompactBatterFormatTest(unittest.TestCase):
 
         self.assertTrue(message.startswith("중계 | 7회말 (2 out)\n"))
 
+    def test_relay_batter_result_includes_occupied_bases_after_play(self):
+        cases = [
+            ({"base1": "2", "base2": "0", "base3": "0"}, "1루"),
+            ({"base1": "3", "base2": "2", "base3": "0"}, "1,2루"),
+            ({"base1": "0", "base2": "3", "base3": "2"}, "2,3루"),
+            ({"base1": "5", "base2": "3", "base3": "2"}, "만루"),
+        ]
+
+        for bases, expected in cases:
+            with self.subTest(expected=expected):
+                event = RelayEvent(
+                    event_id=1,
+                    inning=8,
+                    half="말",
+                    text="카스트로 : 중견수 앞 1루타",
+                    home_score=0,
+                    away_score=2,
+                    current_state={"out": "0", **bases},
+                )
+
+                message = format_relay_event(event, "KT", "KIA")
+
+                self.assertEqual(message.splitlines()[2], f"카스트로 : 중견수 앞 1루타 ({expected})")
+
+    def test_relay_batter_result_omits_base_label_when_bases_are_empty(self):
+        event = RelayEvent(
+            event_id=1,
+            inning=8,
+            half="말",
+            text="김도영 : 중견수 플라이 아웃",
+            home_score=0,
+            away_score=2,
+            current_state={"out": "1", "base1": "0", "base2": "0", "base3": "0"},
+        )
+
+        message = format_relay_event(event, "KT", "KIA")
+
+        self.assertEqual(message.splitlines()[2], "김도영 : 중견수 플라이 아웃")
+
+    def test_runner_score_event_does_not_use_stale_base_state(self):
+        event = RelayEvent(
+            event_id=1,
+            inning=8,
+            half="말",
+            text="3루주자 카스트로 : 홈인",
+            home_score=1,
+            away_score=2,
+            current_state={"out": "1", "base1": "6", "base2": "5", "base3": "3"},
+        )
+
+        message = format_relay_event(event, "KT", "KIA")
+
+        self.assertEqual(message.splitlines()[2], "3루주자 카스트로 : 홈인")
+
     def test_attack_start_header_does_not_include_out_count(self):
         event = RelayEvent(
             event_id=1,
@@ -1043,7 +1097,46 @@ class CompactBatterFormatTest(unittest.TestCase):
         message = format_relay_event_with_context(score, "KIA", "SSG", previous, player)
 
         self.assertIn("김호령 : 중견수 앞 1루타", message)
+        self.assertLess(message.index(previous.text), message.index(score.text))
         self.assertNotIn("1 김호령 | .283 | 1-4", message)
+
+    def test_consecutive_score_context_keeps_relay_sequence_order(self):
+        tag_out = RelayEvent(
+            event_id=473,
+            inning=8,
+            half="말",
+            text="3루주자 정현창 : 태그아웃 (우익수->포수 태그아웃)",
+            home_score=1,
+            away_score=2,
+            title="8번타자 한준수",
+            current_state={"out": "3"},
+        )
+        first_score = RelayEvent(
+            event_id=474,
+            inning=8,
+            half="말",
+            text="2루주자 박정우 : 홈인",
+            home_score=2,
+            away_score=2,
+            title="8번타자 한준수",
+            current_state={"out": "3"},
+        )
+        second_score = RelayEvent(
+            event_id=475,
+            inning=8,
+            half="말",
+            text="3루주자 김도영 : 홈인",
+            home_score=3,
+            away_score=2,
+            title="8번타자 한준수",
+            current_state={"out": "3"},
+        )
+
+        first_message = format_relay_event_with_context(first_score, "KT", "KIA", tag_out)
+        second_message = format_relay_event_with_context(second_score, "KT", "KIA", first_score)
+
+        self.assertLess(first_message.index(tag_out.text), first_message.index(first_score.text))
+        self.assertLess(second_message.index(first_score.text), second_message.index(second_score.text))
 
     def test_score_homer_event_keeps_batter_snapshot(self):
         previous = RelayEvent(

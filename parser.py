@@ -728,7 +728,7 @@ def format_relay_event_with_context(
     text = format_relay_event(event, away_name, home_name, player_record, plate_results, show_player_stats)
     if event.is_score_event and not is_batter_result_event(event) and previous_plate_event and previous_plate_event.text not in text:
         lines = text.splitlines()
-        insert_at = 3 if len(lines) >= 3 else len(lines)
+        insert_at = 2 if len(lines) >= 2 else len(lines)
         lines.insert(insert_at, previous_plate_event.text)
         return "\n".join(lines)
     return text
@@ -979,10 +979,15 @@ def format_relay_event(
     prefix = "득점" if event.is_score_event else "교체" if event.is_pitching_change else "중계"
     out_count = _relay_out_count(event)
     out_text = f" ({out_count} out)" if out_count is not None and not event.is_attack_start else ""
+    play_text = event.text
+    if is_batter_result_event(event):
+        base_label = _base_occupancy_label(event)
+        if base_label:
+            play_text = f"{play_text} ({base_label})"
     lines = [
         f"{prefix} | {event.inning}회{event.half}{out_text}",
         f"{away_name} {event.away_score} : {event.home_score} {home_name}",
-        event.text,
+        play_text,
     ]
 
     if event.is_game_marker or event.is_pitching_change or not show_player_stats:
@@ -1005,6 +1010,16 @@ def _relay_out_count(event: RelayEvent) -> int | None:
     except (TypeError, ValueError):
         return None
     return out_count if 0 <= out_count <= 3 else None
+
+
+def _base_occupancy_label(event: RelayEvent) -> str:
+    state = event.current_state or {}
+    occupied = [base for base in (1, 2, 3) if _to_int(state.get(f"base{base}"))]
+    if len(occupied) == 3:
+        return "만루"
+    if not occupied:
+        return ""
+    return f"{','.join(str(base) for base in occupied)}루"
 
 
 def _out_result_label(event: RelayEvent) -> str:
