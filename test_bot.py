@@ -3014,6 +3014,156 @@ class KiaHalfSummaryTest(unittest.TestCase):
 
 
 class RelayPlateHistoryStateTest(unittest.TestCase):
+    def test_opponent_home_run_uses_plate_rbi_instead_of_cumulative_rbi(self):
+        first_header = RelayEvent(
+            event_id=18,
+            inning=1,
+            half="초",
+            text="4번타자 힐리어드",
+            home_score=0,
+            away_score=0,
+            title="4번타자 힐리어드",
+            batter_record={
+                "pcode": "56034",
+                "name": "힐리어드",
+                "pa": 1,
+                "ab": 1,
+                "hit": 1,
+                "rbi": 1,
+            },
+            batter_code="56034",
+            player_code="56034",
+            home_or_away="0",
+        )
+        first_hit = RelayEvent(
+            event_id=23,
+            inning=1,
+            half="초",
+            text="힐리어드 : 우익수 앞 1루타",
+            home_score=0,
+            away_score=0,
+            title="4번타자 힐리어드",
+            batter_code="56034",
+            player_code="56034",
+            player_name="힐리어드",
+            home_or_away="0",
+        )
+        first_score = RelayEvent(
+            event_id=25,
+            inning=1,
+            half="초",
+            text="3루주자 최원준 : 홈인",
+            home_score=0,
+            away_score=1,
+            title="4번타자 힐리어드",
+            batter_code="56034",
+            player_code="56034",
+            home_or_away="0",
+        )
+        home_run_header = RelayEvent(
+            event_id=261,
+            inning=5,
+            half="초",
+            text="4번타자 힐리어드",
+            home_score=1,
+            away_score=2,
+            title="4번타자 힐리어드",
+            batter_record={
+                "pcode": "56034",
+                "name": "힐리어드",
+                "pa": 3,
+                "ab": 3,
+                "hit": 3,
+                "hr": 1,
+                "rbi": 2,
+            },
+            batter_code="56034",
+            player_code="56034",
+            home_or_away="0",
+        )
+        home_run = RelayEvent(
+            event_id=267,
+            inning=5,
+            half="초",
+            text="힐리어드 : 중견수 뒤 홈런 (홈런거리:125M)",
+            home_score=1,
+            away_score=3,
+            title="4번타자 힐리어드",
+            batter_code="56034",
+            player_code="56034",
+            player_name="힐리어드",
+            home_or_away="0",
+            current_state={"out": "1", "base1": "0", "base2": "0", "base3": "0"},
+        )
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+        telegram = FakeTelegram()
+        state = {}
+        first_relay = {
+            "awayLineup": {
+                "batter": [
+                    {
+                        "pcode": "56034",
+                        "name": "힐리어드",
+                        "batOrder": 4,
+                        "seasonHra": ".296",
+                        "pa": 1,
+                        "ab": 1,
+                        "hit": 1,
+                        "rbi": 1,
+                    }
+                ]
+            }
+        }
+        fifth_relay = {
+            "awayLineup": {
+                "batter": [
+                    {
+                        "pcode": "56034",
+                        "name": "힐리어드",
+                        "batOrder": 4,
+                        "seasonHra": ".299",
+                        "pa": 3,
+                        "ab": 3,
+                        "hit": 3,
+                        "hr": 1,
+                        "rbi": 2,
+                    }
+                ]
+            }
+        }
+
+        dispatch_relay_events(
+            telegram,
+            settings,
+            state,
+            first_relay,
+            [first_header, first_hit, first_score],
+            [first_header, first_hit, first_score],
+            set(),
+            "KT",
+            "KIA",
+            "KT",
+            "HT",
+        )
+        dispatch_relay_events(
+            telegram,
+            settings,
+            state,
+            fifth_relay,
+            [home_run_header, home_run],
+            [home_run_header, home_run],
+            set(),
+            "KT",
+            "KIA",
+            "KT",
+            "HT",
+        )
+
+        labels = [item["label"] for item in state["plateResultHistories"]["56034"]]
+        self.assertEqual(labels, ["안타(타점1)", "홈런(타점1)"])
+        self.assertIn("홈런(타점1)", telegram.messages[-1])
+        self.assertNotIn("홈런(타점2)", telegram.messages[-1])
+
     def test_dispatch_infers_rbi_for_a_bases_loaded_walk_before_api_stats_update(self):
         relay = {
             "homeLineup": {

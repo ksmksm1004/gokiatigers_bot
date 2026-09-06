@@ -1839,12 +1839,11 @@ def dispatch_relay_events(
 ) -> set:
     for event in events_to_send:
         player_record = current_player_record(relay, event)
-        if is_kia_batting(event, home_code, away_code, settings.team_code):
-            remember_plate_rbi_baseline(state, event)
-            if is_batter_result_event(event):
-                player_record = with_forced_walk_rbi(state, event, player_record, all_events)
-                remember_plate_result(state, event, player_record)
-            remember_plate_score(state, event)
+        remember_plate_rbi_baseline(state, event)
+        if is_batter_result_event(event):
+            player_record = with_forced_walk_rbi(state, event, player_record, all_events)
+            remember_plate_result(state, event, player_record)
+        remember_plate_score(state, event)
 
         if event.is_attack_start:
             summary_key = half_key(event)
