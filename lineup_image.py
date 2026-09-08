@@ -24,7 +24,10 @@ POSITION_POINTS = {
     "8": (600, 105),
     "9": (1020, 150),
 }
+LINEUP_POINTS = {**POSITION_POINTS, "0": (180, 745)}
 POSITION_CODES = {
+    "지명타자": "0",
+    "DH": "0",
     "투수": "1",
     "선발투수": "1",
     "포수": "2",
@@ -50,10 +53,10 @@ def defensive_lineup_players(preview: dict[str, Any], side: str) -> list[dict[st
     cache_key = (preview.get("gameInfo") or {}).get("gdate")
     defenders: dict[str, dict[str, Any]] = {}
     for player in get_starting_lineup(preview, side):
-        position_code = str(player.get("position") or "")
-        if position_code not in POSITION_POINTS:
+        position_code = str(player.get("position", ""))
+        if position_code not in LINEUP_POINTS:
             position_code = POSITION_CODES.get(str(player.get("positionName") or ""), "")
-        if position_code not in POSITION_POINTS:
+        if position_code not in LINEUP_POINTS:
             continue
         player_code = player.get("playerCode")
         defenders[position_code] = {
@@ -70,7 +73,7 @@ def render_defensive_lineup_image(
     photo_loader: PhotoLoader | None = None,
 ) -> bytes | None:
     players = defensive_lineup_players(preview, side)
-    if {player["positionCode"] for player in players} != set(POSITION_POINTS):
+    if not set(POSITION_POINTS).issubset({player["positionCode"] for player in players}):
         return None
 
     image = Image.new("RGB", IMAGE_SIZE, "#2f7d45")
@@ -93,12 +96,21 @@ def render_defensive_lineup_image(
         _draw_player(
             image,
             draw,
-            POSITION_POINTS[player["positionCode"]],
+            LINEUP_POINTS[player["positionCode"]],
             str(player.get("playerName") or "-"),
             photo,
             name_font,
             fallback_font,
         )
+        if player["positionCode"] == "0":
+            x, y = LINEUP_POINTS["0"]
+            draw.text(
+                (x, y - 86),
+                "지명타자",
+                font=_load_font(24, bold=True),
+                fill="#ffffff",
+                anchor="mm",
+            )
 
     output = BytesIO()
     image.save(output, format="PNG", optimize=True)

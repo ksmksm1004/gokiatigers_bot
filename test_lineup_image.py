@@ -44,11 +44,11 @@ class DefensiveLineupImageTest(unittest.TestCase):
         image.save(output, format="PNG")
         return output.getvalue()
 
-    def test_defensive_players_exclude_designated_hitter_and_cover_all_positions(self):
+    def test_lineup_players_include_designated_hitter_and_all_defenders(self):
         players = defensive_lineup_players(self.preview(), "away")
 
-        self.assertEqual([player["positionCode"] for player in players], list("123456789"))
-        self.assertNotIn("김도영", [player["playerName"] for player in players])
+        self.assertEqual([player["positionCode"] for player in players], list("0123456789"))
+        self.assertEqual(players[0]["playerName"], "김도영")
 
     def test_rendered_image_is_a_complete_png(self):
         requested_urls = []
@@ -63,8 +63,25 @@ class DefensiveLineupImageTest(unittest.TestCase):
         rendered = Image.open(BytesIO(content))
         self.assertEqual(rendered.format, "PNG")
         self.assertEqual(rendered.size, IMAGE_SIZE)
-        self.assertEqual(len(requested_urls), 9)
+        self.assertEqual(len(requested_urls), 10)
+        self.assertEqual(rendered.getpixel((180, 745)), (200, 30, 40))
         self.assertEqual(rendered.getpixel((0, 0)), (47, 125, 69))
+
+    def test_lineup_without_designated_hitter_still_renders(self):
+        preview = self.preview()
+        preview["awayTeamLineUp"]["fullLineUp"] = [
+            player for player in preview["awayTeamLineUp"]["fullLineUp"]
+            if player["position"] != "0"
+        ]
+        content = render_defensive_lineup_image(preview, "away", lambda _url: self.photo_bytes())
+        self.assertIsNotNone(content)
+
+    def test_numeric_zero_position_identifies_designated_hitter(self):
+        preview = self.preview()
+        player = preview["awayTeamLineUp"]["fullLineUp"][3]
+        player["position"] = 0
+        player["positionName"] = ""
+        self.assertEqual(defensive_lineup_players(preview, "away")[0]["playerName"], "김도영")
 
     def test_incomplete_defense_does_not_render(self):
         preview = self.preview()
