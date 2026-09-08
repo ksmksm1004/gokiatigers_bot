@@ -3,10 +3,33 @@ from io import BytesIO
 
 from PIL import Image
 
-from lineup_image import IMAGE_SIZE, defensive_lineup_players, render_defensive_lineup_image
+from lineup_image import IMAGE_SIZE, current_defensive_preview, defensive_lineup_players, render_defensive_lineup_image
 
 
 class DefensiveLineupImageTest(unittest.TestCase):
+    def test_current_defense_uses_substitutes_positions_and_latest_pitcher(self):
+        preview = self.preview()
+        batters = [
+            {"pcode": p["playerCode"], "name": p["playerName"], "batOrder": p["batorder"],
+             "pos": p["position"], "posName": p["positionName"], "seqno": 1}
+            for p in preview["awayTeamLineUp"]["fullLineUp"] if p["batorder"]
+        ]
+        batters[0]["cout"] = "true"
+        batters.append({"pcode": "new", "name": "교체선수", "batOrder": 1, "pos": 9, "seqno": 2})
+        batters[4]["pos"] = 7
+        relay = {"awayLineup": {"batter": batters, "pitcher": [
+            {"pcode": "new-p", "name": "구원투수", "seqno": 2},
+            {"pcode": "old-p", "name": "선발투수", "seqno": 1},
+        ]}}
+        current = current_defensive_preview(preview, relay, "away")
+        players = {p["positionCode"]: p["playerName"] for p in defensive_lineup_players(current, "away")}
+        self.assertEqual(players["9"], "교체선수")
+        self.assertEqual(players["7"], "나성범")
+        self.assertEqual(players["1"], "구원투수")
+        self.assertEqual(players["0"], "김도영")
+        self.assertNotIn("박재현", players.values())
+        self.assertIsNotNone(render_defensive_lineup_image(current, "away", lambda url: self.photo_bytes()))
+
     @staticmethod
     def preview():
         positions = [

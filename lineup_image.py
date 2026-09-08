@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
-from parser import get_starting_lineup, player_image_url
+from parser import active_lineup, get_starting_lineup, player_image_url
 
 
 IMAGE_SIZE = (1200, 960)
@@ -47,6 +47,29 @@ FONT_CANDIDATES = (
 )
 
 PhotoLoader = Callable[[str], Optional[bytes]]
+
+
+def current_defensive_preview(preview: dict[str, Any], relay: dict[str, Any], side: str) -> dict[str, Any]:
+    players = [
+        {
+            "playerCode": player.get("pcode"),
+            "playerName": player.get("name"),
+            "batorder": player.get("batOrder"),
+            "position": player.get("pos"),
+            "positionName": player.get("posName"),
+        }
+        for player in active_lineup(relay, side)
+    ]
+    pitchers = (relay.get(f"{side}Lineup") or {}).get("pitcher") or []
+    if pitchers:
+        pitcher = max(pitchers, key=lambda player: int(player.get("seqno") or 0))
+        players.append({
+            "playerCode": pitcher.get("pcode"),
+            "playerName": pitcher.get("name"),
+            "position": "1",
+            "positionName": "투수",
+        })
+    return {**preview, f"{side}TeamLineUp": {"fullLineUp": players}}
 
 
 def defensive_lineup_players(preview: dict[str, Any], side: str) -> list[dict[str, Any]]:

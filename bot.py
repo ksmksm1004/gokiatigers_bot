@@ -17,7 +17,7 @@ from kbo_api import (
     format_player_record,
     format_recent_series_results,
 )
-from lineup_image import render_defensive_lineup_image
+from lineup_image import current_defensive_preview, render_defensive_lineup_image
 from naver_api import NaverSportsClient, unwrap
 from naver_weather import NaverWeatherClient
 from parser import (
@@ -77,6 +77,7 @@ from youtube import find_tving_kia_highlight
 
 
 BOT_COMMANDS = [
+    (("/수비", "/defense"), "현재 KIA 수비 배치도 확인 (교체 반영)"),
     (("/라인업", "/lineup"), "오늘 KIA 경기 선발 라인업 확인"),
     (("/일정", "/schedule"), "KIA 향후 경기 일정 확인"),
     (("/최근경기", "/recentgames"), "KIA 최근 4개 시리즈 결과 확인"),
@@ -96,6 +97,7 @@ BOT_COMMANDS = [
 ]
 
 TELEGRAM_MENU_COMMANDS = [
+    ("/defense", "현재 KIA 수비 배치도 확인 (교체 반영)"),
     ("/lineup", "오늘 KIA 경기 선발 라인업 확인"),
     ("/schedule", "KIA 향후 경기 일정 확인"),
     ("/recentgames", "KIA 최근 4개 시리즈 결과"),
@@ -1051,14 +1053,30 @@ def send_defensive_lineup_image(
     telegram: TelegramBot,
     preview: dict[str, Any],
     side: str,
+    caption: str = "KIA 선발 수비",
 ) -> bool:
     image = render_defensive_lineup_image(preview, side)
     if not image:
         return False
     game_date = re.sub(r"\D", "", str((preview.get("gameInfo") or {}).get("gdate") or ""))
     filename = f"kia-defense-{game_date or 'lineup'}.png"
-    telegram.send_photo_bytes(image, "KIA 선발 수비", filename)
+    telegram.send_photo_bytes(image, caption, filename)
     return True
+
+
+def send_current_defense(client: NaverSportsClient, telegram: TelegramBot, game_id: str, team_code: str) -> None:
+    preview = unwrap(client.preview(game_id), "previewData")
+    side = lineup_side_for_team(preview, team_code)
+    if not side:
+        telegram.send_message("KIA 수비 정보를 확인할 수 없습니다.")
+        return
+    relay = unwrap(client.relay(game_id), "textRelayData")
+    has_live_lineup = bool((relay.get(f"{side}Lineup") or {}).get("batter"))
+    if has_live_lineup:
+        preview = current_defensive_preview(preview, relay, side)
+    caption = "KIA 현재 수비" if has_live_lineup else "KIA 선발 수비"
+    if not send_defensive_lineup_image(telegram, preview, side, caption):
+        telegram.send_message("수비 위치 정보가 아직 준비되지 않았습니다. 잠시 후 다시 확인해주세요.")
 
 
 def send_kia_record(
@@ -2257,6 +2275,11 @@ def handle_telegram_commands(
                     reply.send_message("오늘 확인된 KIA 경기가 없습니다.")
                     continue
                 send_lineup(client, reply, game_id)
+            elif command in {"/수비", "/defense"}:
+                if not game_id:
+                    reply.send_message("오늘 확인된 KIA 경기가 없습니다.")
+                    continue
+                send_current_defense(client, reply, game_id, settings.team_code)
             elif command in {"/기록", "/record"}:
                 if not game_id:
                     reply.send_message("오늘 확인된 KIA 경기가 없습니다.")

@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from bot import (
+    send_current_defense,
     dispatch_relay_events,
     fetch_daily_game_results,
     final_score_from_record,
@@ -141,6 +142,27 @@ class FakeTelegram:
         if self.administrator_error:
             raise self.administrator_error
         return self.administrators.get(str(chat_id), [])
+
+
+class CurrentDefenseCommandTest(unittest.TestCase):
+    @patch("bot.render_defensive_lineup_image", return_value=b"current-defense")
+    def test_each_request_fetches_and_sends_current_defense(self, render):
+        client = FakeClient(
+            preview={"gameInfo": {"hCode": "HT"}},
+            relay={"homeLineup": {
+                "batter": [{"pcode": "b", "name": "타자", "batOrder": 1, "pos": 7}],
+                "pitcher": [{"pcode": "p", "name": "투수", "seqno": 1}],
+            }},
+        )
+        telegram = FakeTelegram()
+        with patch.object(client, "relay", wraps=client.relay) as fetch:
+            send_current_defense(client, telegram, "game1", "HT")
+            client._relay["homeLineup"]["batter"][0]["name"] = "교체타자"
+            send_current_defense(client, telegram, "game1", "HT")
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(len(telegram.photo_files), 2)
+        self.assertEqual(telegram.photo_files[-1][1], "KIA 현재 수비")
+        self.assertEqual(render.call_args.args[0]["homeTeamLineUp"]["fullLineUp"][0]["playerName"], "교체타자")
 
 
 class FakeCommandTelegram(FakeTelegram):
