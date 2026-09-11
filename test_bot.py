@@ -739,8 +739,8 @@ class HeadToHeadCommandTest(unittest.TestCase):
 
         self.assertEqual(client.calls, [(2026, "HT")])
         self.assertEqual(telegram.messages[0].splitlines()[0], "KIA 전구단 상대 전적")
-        self.assertIn("vs SSG 0승 1무 1패", telegram.messages[0])
-        self.assertIn("vs KT 1승 0무 0패", telegram.messages[0])
+        self.assertIn("vs SSG 0승 1무 1패 | 승률 0.000", telegram.messages[0])
+        self.assertIn("vs KT 1승 0무 0패 | 승률 1.000", telegram.messages[0])
         self.assertEqual(sum(line.startswith("vs ") for line in telegram.messages[0].splitlines()), 9)
 
     def test_invalid_team_returns_usage_without_api_request(self):

@@ -1017,10 +1017,13 @@ def format_all_head_to_head_results(
         lines += ["", "아직 완료된 경기가 없습니다."]
     else:
         lines += [""]
-        lines.extend(
-            f"vs {opponent} {record['승']}승 {record['무']}무 {record['패']}패"
-            for opponent, record in records.items()
-        )
+        for opponent, record in records.items():
+            decisions = record["승"] + record["패"]
+            win_rate = record["승"] / decisions if decisions else 0.0
+            lines.append(
+                f"vs {opponent} {record['승']}승 {record['무']}무 {record['패']}패 | "
+                f"승률 {win_rate:.3f}"
+            )
     return "\n".join(lines)
 
 
