@@ -92,6 +92,8 @@ BOT_COMMANDS = [
     (("/투수기록", "/pitcherrecord"), "KBO 투수 TOP 10·개인 기록 확인"),
     (("/뉴스", "/news"), "KIA 주요 기사 확인"),
     (("/날씨", "/weather"), "오늘 KIA 경기 구장 날씨 확인"),
+    (("/풀중계", "/fullrelay"), "관리자: 이 방 전체 중계 모드로 전환"),
+    (("/기본중계", "/basicrelay"), "관리자: 이 방 기본 중계 모드로 전환"),
     (("/gg",), "관리자: 오늘 경기 중계 중단 후 종료 결과만 받기"),
     (("/re",), "관리자: 중단한 오늘 경기 중계 재개"),
     (("/도움말", "/명령어", "/help", "/start"), "사용 가능한 명령어 보기"),
@@ -112,6 +114,8 @@ TELEGRAM_MENU_COMMANDS = [
     ("/pitcherrecord", "KBO 투수 TOP 10·개인 기록"),
     ("/news", "KIA 주요 기사 확인"),
     ("/weather", "오늘 KIA 경기 구장 날씨"),
+    ("/fullrelay", "관리자: 이 방 전체 중계 모드"),
+    ("/basicrelay", "관리자: 이 방 기본 중계 모드"),
     ("/gg", "관리자: 오늘 경기 중계 중단"),
     ("/re", "관리자: 오늘 경기 중계 재개"),
     ("/help", "사용 가능한 명령어 보기"),
@@ -1898,6 +1902,15 @@ def dispatch_relay_events(
             )
             if expected:
                 telegram.send_message(expected)
+            send_full_relay_event(
+                telegram,
+                state,
+                all_events,
+                event,
+                player_record,
+                away_name,
+                home_name,
+            )
             continue
 
         if is_relay_game_over_marker(event):
@@ -1917,22 +1930,16 @@ def dispatch_relay_events(
                     telegram.send_message(summary)
                     sent_summaries.add(final_summary_key)
 
-        if not should_send_relay_event(event, home_code, away_code, settings.team_code):
+        send_standard = should_send_relay_event(event, home_code, away_code, settings.team_code)
+        if not send_standard and not full_relay_chat_ids(state):
+            continue
+
+        message = relay_event_message(state, all_events, event, player_record, away_name, home_name)
+        if not send_standard:
+            send_full_relay_message(telegram, state, message)
             continue
 
         previous_plate = find_previous_plate_event(all_events, event)
-        player_record = with_state_plate_totals(player_record, state_plate_results(state, event.batter_code))
-        plate_results = state_plate_labels(state, event.batter_code) or plate_result_history(all_events, event, player_record)
-        base_state = completed_plate_state(all_events, event) if is_batter_result_event(event) else None
-        message = format_relay_event_with_context(
-            event,
-            away_name,
-            home_name,
-            previous_plate,
-            player_record,
-            plate_results,
-            base_state,
-        )
         photo = None
         if (
             event.is_pitching_change
@@ -1948,6 +1955,74 @@ def dispatch_relay_events(
         else:
             telegram.send_message(message)
     return sent_summaries
+
+
+def relay_event_message(
+    state: dict[str, Any],
+    all_events: list[RelayEvent],
+    event: RelayEvent,
+    player_record: dict[str, Any],
+    away_name: str,
+    home_name: str,
+) -> str:
+    previous_plate = find_previous_plate_event(all_events, event)
+    player_record = with_state_plate_totals(player_record, state_plate_results(state, event.batter_code))
+    plate_results = state_plate_labels(state, event.batter_code) or plate_result_history(all_events, event, player_record)
+    base_state = completed_plate_state(all_events, event) if is_batter_result_event(event) else None
+    return format_relay_event_with_context(
+        event,
+        away_name,
+        home_name,
+        previous_plate,
+        player_record,
+        plate_results,
+        base_state,
+    )
+
+
+def send_full_relay_event(
+    telegram: TelegramBot,
+    state: dict[str, Any],
+    all_events: list[RelayEvent],
+    event: RelayEvent,
+    player_record: dict[str, Any],
+    away_name: str,
+    home_name: str,
+) -> None:
+    if not full_relay_chat_ids(state):
+        return
+    send_full_relay_message(
+        telegram,
+        state,
+        relay_event_message(state, all_events, event, player_record, away_name, home_name),
+    )
+
+
+def full_relay_chat_ids(state: dict[str, Any]) -> tuple[str, ...]:
+    values = state.get("fullRelayChatIds") or []
+    if not isinstance(values, list):
+        return ()
+    return tuple(dict.fromkeys(str(chat_id) for chat_id in values if str(chat_id)))
+
+
+def set_full_relay_mode(state: dict[str, Any], chat_id: str, enabled: bool) -> bool:
+    chat_ids = list(full_relay_chat_ids(state))
+    normalized = str(chat_id)
+    if enabled:
+        if normalized in chat_ids:
+            return False
+        chat_ids.append(normalized)
+    else:
+        if normalized not in chat_ids:
+            return False
+        chat_ids.remove(normalized)
+    state["fullRelayChatIds"] = chat_ids
+    return True
+
+
+def send_full_relay_message(telegram: TelegramBot, state: dict[str, Any], message: str) -> None:
+    for chat_id in full_relay_chat_ids(state):
+        telegram.for_chat(chat_id).send_message(message)
 
 
 def with_forced_walk_rbi(
@@ -2339,6 +2414,26 @@ def handle_telegram_commands(
                     reply.send_message("오늘 확인된 KIA 경기가 없습니다.")
                     continue
                 send_stadium_weather(client, weather_client, reply, settings, state, game_id)
+            elif command in {"/풀중계", "/fullrelay"}:
+                denial_message = relay_control_denial_message(reply, message)
+                if denial_message:
+                    reply.send_message(denial_message)
+                    continue
+                changed = set_full_relay_mode(state, chat_id, True)
+                if changed:
+                    reply.send_message("이 방을 전체 중계 모드로 전환했습니다. 양 팀 모든 투구·타석·주루·교체 실황을 추가로 보냅니다.")
+                else:
+                    reply.send_message("이 방은 이미 전체 중계 모드입니다.")
+            elif command in {"/기본중계", "/basicrelay"}:
+                denial_message = relay_control_denial_message(reply, message)
+                if denial_message:
+                    reply.send_message(denial_message)
+                    continue
+                changed = set_full_relay_mode(state, chat_id, False)
+                if changed:
+                    reply.send_message("이 방을 기본 중계 모드로 전환했습니다.")
+                else:
+                    reply.send_message("이 방은 이미 기본 중계 모드입니다.")
             elif command == "/gg":
                 denial_message = relay_control_denial_message(reply, message)
                 if denial_message:
@@ -3163,6 +3258,7 @@ def main() -> None:
                     "nextDailyRankingCheckAt": state.get("nextDailyRankingCheckAt"),
                     "nextPreviewCheckAt": state.get("nextPreviewCheckAt"),
                     "relayStoppedGameId": state.get("relayStoppedGameId"),
+                    "fullRelayChatIds": state.get("fullRelayChatIds", []),
                     "pendingRecordCommands": state.get("pendingRecordCommands"),
                     "kiaNewsGameId": state.get("kiaNewsGameId"),
                     "nextKiaNewsAt": state.get("nextKiaNewsAt"),

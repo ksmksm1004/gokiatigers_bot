@@ -244,7 +244,7 @@ class MultiChatCommandTest(unittest.TestCase):
         send_stats.assert_called_once_with(client, telegram, settings, "hitter", "타율")
 
     def test_relay_control_commands_are_rejected_for_regular_group_members(self):
-        for index, command in enumerate(("/gg", "/re"), start=40):
+        for index, command in enumerate(("/풀중계", "/기본중계", "/gg", "/re"), start=40):
             with self.subTest(command=command), TemporaryDirectory() as directory:
                 telegram = FakeCommandTelegram(
                     [
@@ -282,6 +282,54 @@ class MultiChatCommandTest(unittest.TestCase):
                     telegram.messages,
                     ["이 명령은 그룹 관리자만 사용할 수 있습니다."],
                 )
+
+    def test_group_administrator_can_switch_relay_mode_for_its_room(self):
+        telegram = FakeCommandTelegram(
+            [
+                {
+                    "update_id": 49,
+                    "message": {
+                        "chat": {"id": "-100group", "type": "supergroup"},
+                        "from": {"id": 100},
+                        "text": "/풀중계",
+                    },
+                }
+            ]
+        )
+        telegram.administrators["-100group"] = [
+            {"status": "administrator", "user": {"id": 100}}
+        ]
+        with TemporaryDirectory() as directory:
+            settings = Settings(
+                telegram_token="",
+                telegram_chat_id="chat-a",
+                telegram_chat_ids=("-100group",),
+                dry_run=True,
+                state_path=Path(directory) / "state.json",
+            )
+            state = {"telegramUpdateOffset": 49}
+            handle_telegram_commands(FakeClient(), object(), telegram, settings, state, None)
+
+            telegram.updates = [
+                {
+                    "update_id": 50,
+                    "message": {
+                        "chat": {"id": "-100group", "type": "supergroup"},
+                        "from": {"id": 100},
+                        "text": "/기본중계",
+                    },
+                }
+            ]
+            handle_telegram_commands(FakeClient(), object(), telegram, settings, state, None)
+
+        self.assertEqual(
+            telegram.messages,
+            [
+                "이 방을 전체 중계 모드로 전환했습니다. 양 팀 모든 투구·타석·주루·교체 실황을 추가로 보냅니다.",
+                "이 방을 기본 중계 모드로 전환했습니다.",
+            ],
+        )
+        self.assertEqual(state["fullRelayChatIds"], [])
 
     def test_group_administrator_can_reach_relay_control_command(self):
         telegram = FakeCommandTelegram(
@@ -829,6 +877,68 @@ class RecentGamesCommandTest(unittest.TestCase):
 
 
 class PitchingChangePhotoTest(unittest.TestCase):
+    def test_full_relay_mode_sends_opponent_and_pitch_events_only_to_selected_room(self):
+        events = [
+            RelayEvent(
+                event_id=1,
+                inning=1,
+                half="초",
+                text="1구 볼",
+                home_score=0,
+                away_score=0,
+                home_or_away="0",
+                current_state={"out": "0"},
+            ),
+            RelayEvent(
+                event_id=2,
+                inning=1,
+                half="초",
+                text="최지훈 : 우익수 앞 1루타",
+                home_score=0,
+                away_score=0,
+                player_name="최지훈",
+                batter_code="54830",
+                home_or_away="0",
+                current_state={"out": "0", "base1": "54830"},
+            ),
+            RelayEvent(
+                event_id=3,
+                inning=2,
+                half="초",
+                text="2회초 SSG 공격",
+                home_score=0,
+                away_score=0,
+                home_or_away="0",
+                current_state={"out": "0"},
+            ),
+        ]
+        telegram = FakeTelegram()
+        settings = Settings(
+            telegram_token="",
+            telegram_chat_id="chat-basic",
+            telegram_chat_ids=("chat-basic", "chat-full"),
+            dry_run=True,
+        )
+
+        dispatch_relay_events(
+            telegram,
+            settings,
+            {"fullRelayChatIds": ["chat-full"]},
+            {},
+            events,
+            events,
+            set(),
+            "SSG",
+            "KIA",
+            "SK",
+            "HT",
+        )
+
+        self.assertEqual(telegram.message_chat_ids, ["chat-full", "chat-full", "chat-full"])
+        self.assertIn("1구 볼", telegram.messages[0])
+        self.assertIn("최지훈 : 우익수 앞 1루타", telegram.messages[1])
+        self.assertIn("2회초 SSG 공격", telegram.messages[2])
+
     def test_kia_pitching_change_sends_new_pitcher_photo(self):
         event = RelayEvent(
             event_id=1,
