@@ -46,7 +46,7 @@ from bot import (
 )
 from config import Settings
 from kbo_api import KBOGameResult, KBOPlayerCandidate, KBOPlayerRecord
-from parser import RelayEvent
+from parser import RelayEvent, half_out_results
 
 
 class FakeClient:
@@ -2564,6 +2564,88 @@ class KiaHalfSummaryTest(unittest.TestCase):
         )
 
         self.assertTrue(any(event.event_id == 560 for event in events))
+
+    def test_attack_start_refreshes_partial_previous_half_before_summary(self):
+        current_relay = {
+            "textRelays": [
+                {
+                    "inn": 1,
+                    "homeOrAway": "1",
+                    "title": "3번타자 박재현",
+                    "textOptions": [
+                        {
+                            "seqno": 42,
+                            "text": "박재현 : 삼진 아웃",
+                            "currentGameState": {"awayScore": 0, "homeScore": 0, "batter": "55636", "out": "1"},
+                        }
+                    ],
+                },
+                {
+                    "inn": 2,
+                    "homeOrAway": "0",
+                    "title": "2회초 SSG 공격",
+                    "textOptions": [
+                        {
+                            "seqno": 62,
+                            "text": "2회초 SSG 공격",
+                            "currentGameState": {"awayScore": 0, "homeScore": 0, "batter": "0", "out": "0"},
+                        }
+                    ],
+                },
+            ]
+        }
+        completed_relay = {
+            "textRelays": [
+                {
+                    "inn": 1,
+                    "homeOrAway": "1",
+                    "title": "3번타자 박재현",
+                    "textOptions": [
+                        {
+                            "seqno": 42,
+                            "text": "박재현 : 삼진 아웃",
+                            "currentGameState": {"awayScore": 0, "homeScore": 0, "batter": "55636", "out": "1"},
+                        },
+                        {
+                            "seqno": 55,
+                            "text": "나성범 : 삼진 아웃",
+                            "currentGameState": {"awayScore": 0, "homeScore": 0, "batter": "62947", "out": "2"},
+                        },
+                        {
+                            "seqno": 61,
+                            "text": "하주석 : 삼진 아웃",
+                            "currentGameState": {"awayScore": 0, "homeScore": 0, "batter": "62700", "out": "3"},
+                        },
+                    ],
+                }
+            ]
+        }
+        relay, events = include_previous_half_events(
+            FakeClient(relay=current_relay, relay_by_inning={1: completed_relay}),
+            "20260911SKHT02026",
+            current_relay,
+            [
+                RelayEvent(
+                    42, 1, "말", "박재현 : 삼진 아웃", 0, 0,
+                    batter_code="55636", home_or_away="1", current_state={"out": "1"},
+                ),
+                RelayEvent(
+                    62, 2, "초", "2회초 SSG 공격", 0, 0,
+                    home_or_away="0", current_state={"out": "0"},
+                ),
+            ],
+            set(),
+            "HT",
+            "SK",
+            "HT",
+            61,
+        )
+
+        self.assertEqual(relay["textRelays"][:1], completed_relay["textRelays"])
+        self.assertEqual(
+            [(item.label, item.tagged_label) for item in half_out_results(events, 1, "말")],
+            [("삼진", "삼진1"), ("삼진", "삼진2"), ("삼진", "삼진3")],
+        )
 
     def test_opponent_half_summary_is_sent_before_clean_kia_attack_start(self):
         events = [

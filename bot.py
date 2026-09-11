@@ -1805,7 +1805,7 @@ def include_previous_half_events(
             continue
         if half_key(event) not in sent_summaries:
             previous_half = (event.inning, "초") if event.half == "말" else (event.inning - 1, "말")
-            if previous_half[0] > 0 and previous_half not in available_halves:
+            if previous_half[0] > 0:
                 missing_innings.add(previous_half[0])
         if is_kia_batting(event, home_code, away_code, team_code):
             if event.event_id <= last_seq:
