@@ -13,6 +13,7 @@ from config import Settings, get_settings
 from kbo_api import (
     KBOPlayerCandidate,
     KBOPlayerClient,
+    format_all_head_to_head_results,
     format_head_to_head_results,
     format_player_record,
     format_recent_series_results,
@@ -82,7 +83,7 @@ BOT_COMMANDS = [
     (("/일정", "/schedule"), "KIA 향후 경기 일정 확인"),
     (("/최근경기", "/recentgames"), "KIA 최근 4개 시리즈 결과 확인"),
     (("/스코어", "/score"), "오늘 KBO 전체 경기 현재 스코어 확인"),
-    (("/상대전적", "/headtohead"), "KIA 상대 팀별 시즌 전적 확인"),
+    (("/상대전적", "/headtohead"), "KIA 전 구단·상대 팀별 시즌 전적 확인"),
     (("/기록", "/record"), "오늘 KIA 경기 기록 확인"),
     (("/순위", "/rank"), "KBO 팀 순위 확인"),
     (("/월간성적", "/monthlyrecord"), "이번 달 KBO 팀 성적 확인"),
@@ -102,7 +103,7 @@ TELEGRAM_MENU_COMMANDS = [
     ("/schedule", "KIA 향후 경기 일정 확인"),
     ("/recentgames", "KIA 최근 4개 시리즈 결과"),
     ("/score", "오늘 KBO 전체 경기 현재 스코어"),
-    ("/headtohead", "KIA 상대 팀별 시즌 전적 확인"),
+    ("/headtohead", "KIA 전 구단·상대 팀별 시즌 전적 확인"),
     ("/record", "오늘 KIA 경기 기록 확인"),
     ("/rank", "KBO 팀 순위 확인"),
     ("/monthlyrecord", "이번 달 KBO 팀 성적 확인"),
@@ -1141,6 +1142,14 @@ def send_head_to_head_record(
     kbo_client: KBOPlayerClient | None = None,
     now: datetime | None = None,
 ) -> None:
+    current = now or datetime.now(settings.timezone)
+    team_name = TEAM_NAMES.get(settings.team_code, settings.team_code)
+    if not str(opponent_query or "").strip():
+        games = (kbo_client or KBOPlayerClient()).team_schedule_results(current.year, settings.team_code)
+        opponents = [name for code, name in TEAM_NAMES.items() if code != settings.team_code]
+        telegram.send_message(format_all_head_to_head_results(games, team_name, opponents))
+        return
+
     opponent = resolve_opponent_team(opponent_query)
     if not opponent:
         telegram.send_message(head_to_head_usage_message(opponent_query))
@@ -1149,10 +1158,7 @@ def send_head_to_head_record(
     if opponent_code == settings.team_code:
         telegram.send_message("KIA 이외의 상대 팀을 입력해주세요.")
         return
-
-    current = now or datetime.now(settings.timezone)
     games = (kbo_client or KBOPlayerClient()).team_schedule_results(current.year, settings.team_code)
-    team_name = TEAM_NAMES.get(settings.team_code, settings.team_code)
     telegram.send_message(format_head_to_head_results(games, opponent_name, team_name))
 
 

@@ -995,6 +995,35 @@ def format_head_to_head_results(
     return "\n".join(lines)
 
 
+def format_all_head_to_head_results(
+    games: list[KBOGameResult],
+    team_name: str = "KIA",
+    opponent_names: list[str] | None = None,
+) -> str:
+    records = {
+        opponent: {"승": 0, "무": 0, "패": 0}
+        for opponent in opponent_names or []
+        if opponent != team_name
+    }
+    for game in games:
+        if team_name not in {game.away_team, game.home_team}:
+            continue
+        opponent = game.home_team if game.away_team == team_name else game.away_team
+        record = records.setdefault(opponent, {"승": 0, "무": 0, "패": 0})
+        record[_game_result_for_team(game, team_name)] += 1
+
+    lines = [f"{team_name} 전구단 상대 전적"]
+    if not records:
+        lines += ["", "아직 완료된 경기가 없습니다."]
+    else:
+        lines += [""]
+        lines.extend(
+            f"vs {opponent} {record['승']}승 {record['무']}무 {record['패']}패"
+            for opponent, record in records.items()
+        )
+    return "\n".join(lines)
+
+
 def format_recent_series_results(
     games: list[KBOGameResult],
     team_name: str = "KIA",

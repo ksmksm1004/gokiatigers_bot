@@ -712,11 +712,42 @@ class HeadToHeadCommandTest(unittest.TestCase):
             ),
         )
 
-    def test_missing_team_returns_usage_without_api_request(self):
+    def test_missing_team_sends_all_opponents_summary(self):
+        class ScheduleClient:
+            def __init__(self):
+                self.calls = []
+
+            def team_schedule_results(self, season, team_id):
+                self.calls.append((season, team_id))
+                return [
+                    KBOGameResult(date(2026, 4, 14), "KT", 2, 6, "KIA"),
+                    KBOGameResult(date(2026, 4, 15), "SSG", 3, 3, "KIA"),
+                    KBOGameResult(date(2026, 4, 16), "KIA", 1, 4, "SSG"),
+                ]
+
+        client = ScheduleClient()
         telegram = FakeTelegram()
         settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
 
-        send_head_to_head_record(telegram, settings, "")
+        send_head_to_head_record(
+            telegram,
+            settings,
+            "",
+            client,
+            datetime(2026, 8, 21, tzinfo=settings.timezone),
+        )
+
+        self.assertEqual(client.calls, [(2026, "HT")])
+        self.assertEqual(telegram.messages[0].splitlines()[0], "KIA 전구단 상대 전적")
+        self.assertIn("vs SSG 0승 1무 1패", telegram.messages[0])
+        self.assertIn("vs KT 1승 0무 0패", telegram.messages[0])
+        self.assertEqual(sum(line.startswith("vs ") for line in telegram.messages[0].splitlines()), 9)
+
+    def test_invalid_team_returns_usage_without_api_request(self):
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+
+        send_head_to_head_record(telegram, settings, "없는팀")
 
         self.assertIn("사용법: /상대전적 키움", telegram.messages[0])
 
