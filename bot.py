@@ -176,6 +176,8 @@ KIA_HIGHLIGHT_MAX_ATTEMPTS = 12
 KIA_SHORTS_LIMIT = 5
 KIA_SHORTS_RETRY_MINUTES = 10
 KIA_SHORTS_MAX_ATTEMPTS = 12
+ASIAN_GAMES_START_DATE = date(2026, 9, 19)
+ASIAN_GAMES_END_DATE = date(2026, 10, 4)
 
 
 def opponent_pitching_context(home_code: str, away_code: str, team_code: str) -> tuple[str, str] | None:
@@ -531,6 +533,57 @@ def get_cached_today_game(
         state["nextScheduleCheckAt"] = next_schedule_lookup_at(now).isoformat()
     save_state(settings.state_path, state)
     return game
+
+
+def active_asian_games_baseball_game(
+    client: NaverSportsClient,
+    state: dict[str, Any],
+    now: datetime,
+) -> dict[str, Any] | None:
+    """Find today's live Korea national-team baseball game, if one exists."""
+    games = client.asian_games_baseball_games(now.date())
+    tracked_game_id = str(state.get("asianGamesRelayGameId") or "")
+    active_games: list[dict[str, Any]] = []
+    for game in games:
+        service_game_id = str(game.get("serviceGameId") or "")
+        status = str(game.get("statusCode") or "").upper()
+        if service_game_id == tracked_game_id:
+            if (
+                status in TERMINAL_SCHEDULE_STATUS
+                and state.get("asianGamesRelayGameOverSentGameId") == service_game_id
+            ):
+                continue
+            return game
+        if status in ACTIVE_SCHEDULE_STATUS:
+            active_games.append(game)
+    return active_games[0] if active_games else None
+
+
+def asian_games_relay_game_detail(
+    client: NaverSportsClient,
+    game: dict[str, Any],
+) -> tuple[str, str, str, str, str]:
+    """Resolve the relay ID and the service game's team names/codes."""
+    relay_game_id = str(game.get("serviceGameId") or "")
+    detail = unwrap(client.game_detail(relay_game_id), "game") if relay_game_id else {}
+    away_code = str(detail.get("awayTeamCode") or game.get("awayTeamCode") or "")
+    home_code = str(detail.get("homeTeamCode") or game.get("homeTeamCode") or "")
+    away_name = str(detail.get("awayTeamName") or game.get("awayTeamName") or "원정")
+    home_name = str(detail.get("homeTeamName") or game.get("homeTeamName") or "홈")
+    return relay_game_id, away_name, home_name, away_code, home_code
+
+
+def asian_games_korea_team_code(
+    away_name: str,
+    home_name: str,
+    away_code: str,
+    home_code: str,
+) -> str:
+    if away_name == "대한민국":
+        return away_code
+    if home_name == "대한민국":
+        return home_code
+    return "KR" if "KR" in {away_code, home_code} else "KOR"
 
 
 def get_detailed_game(
@@ -1794,6 +1847,201 @@ def process_relay(
     )
     save_state(settings.state_path, state)
     return is_game_over(events)
+
+
+def process_asian_games_baseball_relay(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+    game: dict[str, Any],
+) -> bool:
+    """Send a Korea-focused relay for the Asian Games without touching KBO state."""
+    relay_game_id, away_name, home_name, away_code, home_code = asian_games_relay_game_detail(client, game)
+    if not relay_game_id:
+        return False
+    korea_team_code = asian_games_korea_team_code(
+        away_name,
+        home_name,
+        away_code,
+        home_code,
+    )
+
+    previous_game_id = str(state.get("asianGamesRelayGameId") or "")
+    if previous_game_id and previous_game_id != relay_game_id:
+        for key in (
+            "asianGamesRelayGameId",
+            "asianGamesRelayLastSeq",
+            "asianGamesRelayBootstrapped",
+            "asianGamesRelayGameOverSentGameId",
+        ):
+            state.pop(key, None)
+
+    relay = unwrap(client.relay(relay_game_id), "textRelayData")
+    events = parse_relay_events(relay)
+    if not events:
+        return False
+
+    last_seq = int(state.get("asianGamesRelayLastSeq") or 0)
+    schedule_finished = str(game.get("statusCode") or "").upper() in TERMINAL_SCHEDULE_STATUS
+    game_over = is_game_over(events) or (
+        previous_game_id == relay_game_id
+        and bool(state.get("asianGamesRelayBootstrapped"))
+        and schedule_finished
+    )
+    if last_seq == 0 and not state.get("asianGamesRelayBootstrapped"):
+        latest = events[-1]
+        # Do not replay a completed game when this feature is first deployed.
+        if not game_over:
+            telegram.send_message(
+                "\n".join(
+                    [
+                        "아시안게임 야구 중계 감시 시작",
+                        f"{away_name} {latest.away_score} : {latest.home_score} {home_name}",
+                        f"현재 {latest.inning}회{latest.half}",
+                    ]
+                )
+            )
+            bootstrap_events = [
+                event
+                for event in events
+                if event.inning == latest.inning and event.half == latest.half
+            ]
+            dispatch_asian_games_relay_events(
+                telegram,
+                state,
+                relay,
+                events,
+                bootstrap_events,
+                away_name,
+                home_name,
+                away_code,
+                home_code,
+                korea_team_code,
+            )
+        state.update(
+            {
+                "asianGamesRelayGameId": relay_game_id,
+                "asianGamesRelayLastSeq": latest.event_id,
+                "asianGamesRelayBootstrapped": True,
+                "asianGamesRelayUpdatedAt": datetime.now(settings.timezone).isoformat(),
+            }
+        )
+        if game_over:
+            state["asianGamesRelayGameOverSentGameId"] = relay_game_id
+        save_state(settings.state_path, state)
+        return game_over
+
+    new_events = [event for event in events if event.event_id > last_seq]
+    if new_events:
+        logging.info(
+            "Processing Asian Games relay events for %s: seq %s-%s (%s events).",
+            relay_game_id,
+            new_events[0].event_id,
+            new_events[-1].event_id,
+            len(new_events),
+        )
+        dispatch_asian_games_relay_events(
+            telegram,
+            state,
+            relay,
+            events,
+            new_events,
+            away_name,
+            home_name,
+            away_code,
+            home_code,
+            korea_team_code,
+        )
+
+    latest = events[-1]
+    state.update(
+        {
+            "asianGamesRelayGameId": relay_game_id,
+            "asianGamesRelayLastSeq": max(last_seq, latest.event_id),
+            "asianGamesRelayBootstrapped": True,
+            "asianGamesRelayUpdatedAt": datetime.now(settings.timezone).isoformat(),
+        }
+    )
+    if game_over and state.get("asianGamesRelayGameOverSentGameId") != relay_game_id:
+        telegram.send_message(
+            "\n".join(
+                [
+                    "아시안게임 야구 | 경기종료",
+                    f"{away_name} {latest.away_score} : {latest.home_score} {home_name}",
+                ]
+            )
+        )
+        state["asianGamesRelayGameOverSentGameId"] = relay_game_id
+    save_state(settings.state_path, state)
+    return game_over
+
+
+def dispatch_asian_games_relay_events(
+    telegram: TelegramBot,
+    state: dict[str, Any],
+    relay: dict[str, Any],
+    all_events: list[RelayEvent],
+    events_to_send: list[RelayEvent],
+    away_name: str,
+    home_name: str,
+    away_code: str,
+    home_code: str,
+    korea_team_code: str,
+) -> None:
+    for event in events_to_send:
+        if event.is_attack_start and is_kia_batting(event, home_code, away_code, korea_team_code):
+            telegram.send_message(
+                "\n".join(
+                    [
+                        f"대한민국 공격 시작 | {event.inning}회{event.half}",
+                        f"{away_name} {event.away_score} : {event.home_score} {home_name}",
+                    ]
+                )
+            )
+            continue
+
+        send_standard = should_send_relay_event(event, home_code, away_code, korea_team_code)
+        if not send_standard and not full_relay_chat_ids(state):
+            continue
+
+        player_record = current_player_record(relay, event)
+        message = format_relay_event_with_context(
+            event,
+            away_name,
+            home_name,
+            find_previous_plate_event(all_events, event),
+            player_record,
+            plate_result_history(all_events, event, player_record),
+            completed_plate_state(all_events, event) if is_batter_result_event(event) else None,
+        )
+        if send_standard:
+            telegram.send_message(message)
+        else:
+            send_full_relay_message(telegram, state, message)
+
+
+def process_due_asian_games_baseball_relay(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+    now: datetime,
+) -> None:
+    if not ASIAN_GAMES_START_DATE <= now.date() <= ASIAN_GAMES_END_DATE:
+        return
+    next_check = _parse_dt(state.get("nextAsianGamesRelayCheckAt"))
+    if next_check and now < next_check:
+        return
+
+    game = active_asian_games_baseball_game(client, state, now)
+    if game:
+        process_asian_games_baseball_relay(client, telegram, settings, state, game)
+        interval = settings.poll_seconds
+    else:
+        interval = max(30, settings.idle_poll_seconds)
+    state["nextAsianGamesRelayCheckAt"] = (now + timedelta(seconds=interval)).isoformat()
+    save_state(settings.state_path, state)
 
 
 def include_previous_half_events(
@@ -3219,6 +3467,10 @@ def main() -> None:
             send_due_kia_news(client, telegram, settings, state, now)
             send_due_kia_highlight(client, telegram, settings, state, now)
             send_due_kia_shorts(client, telegram, settings, state, now)
+            try:
+                process_due_asian_games_baseball_relay(client, telegram, settings, state, now)
+            except Exception:
+                logging.exception("Asian Games baseball relay check failed.")
             game = get_cached_today_game(client, settings, state, now)
 
             if not game:
@@ -3259,6 +3511,12 @@ def main() -> None:
                     "nextPreviewCheckAt": state.get("nextPreviewCheckAt"),
                     "relayStoppedGameId": state.get("relayStoppedGameId"),
                     "fullRelayChatIds": state.get("fullRelayChatIds", []),
+                    "asianGamesRelayGameId": state.get("asianGamesRelayGameId"),
+                    "asianGamesRelayLastSeq": state.get("asianGamesRelayLastSeq"),
+                    "asianGamesRelayBootstrapped": state.get("asianGamesRelayBootstrapped"),
+                    "asianGamesRelayGameOverSentGameId": state.get("asianGamesRelayGameOverSentGameId"),
+                    "asianGamesRelayUpdatedAt": state.get("asianGamesRelayUpdatedAt"),
+                    "nextAsianGamesRelayCheckAt": state.get("nextAsianGamesRelayCheckAt"),
                     "pendingRecordCommands": state.get("pendingRecordCommands"),
                     "kiaNewsGameId": state.get("kiaNewsGameId"),
                     "nextKiaNewsAt": state.get("nextKiaNewsAt"),

@@ -55,6 +55,48 @@ class NaverApiTest(unittest.TestCase):
         self.assertEqual(client.games_on(date(2026, 7, 20)), [])
         self.assertFalse(client.fallback_called)
 
+    def test_asian_games_baseball_games_uses_service_game_id(self):
+        client = NaverSportsClient()
+        client.get_json = Mock(
+            return_value={
+                "result": {
+                    "games": [
+                        {
+                            "gameId": "event-game",
+                            "serviceGameId": "relay-game",
+                            "disciplineId": "BSB",
+                            "koreaPlayer": True,
+                        },
+                        {
+                            "gameId": "other-discipline",
+                            "serviceGameId": "other-relay",
+                            "disciplineId": "SOC",
+                            "koreaPlayer": True,
+                        },
+                    ]
+                }
+            }
+        )
+
+        games = client.asian_games_baseball_games(date(2026, 9, 21))
+
+        self.assertEqual([game["serviceGameId"] for game in games], ["relay-game"])
+        client.get_json.assert_called_once_with(
+            "/olympic/asiangames2026/games",
+            params={
+                "fromDate": "2026-09-21",
+                "toDate": "2026-09-21",
+                "disciplineId": "BSB",
+                "includeKorean": "true",
+                "includeMedal": "false",
+                "includeScheduledTv": "false",
+                "page": 1,
+                "pageSize": 100,
+                "sort": "dateAsc",
+                "fields": "all",
+            },
+        )
+
     def test_find_calendar_game_dicts_ignores_empty_non_kbo_games(self):
         games = find_calendar_game_dicts(
             {

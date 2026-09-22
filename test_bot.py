@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from bot import (
     send_current_defense,
+    asian_games_korea_team_code,
     dispatch_relay_events,
     fetch_daily_game_results,
     final_score_from_record,
@@ -20,6 +21,7 @@ from bot import (
     player_from_callback_data,
     player_selection_keyboard,
     process_relay,
+    process_asian_games_baseball_relay,
     record_options_keyboard,
     remember_plate_result,
     remember_plate_rbi_baseline,
@@ -1002,6 +1004,126 @@ class PitchingChangePhotoTest(unittest.TestCase):
 
         self.assertEqual(telegram.photos, [])
         self.assertEqual(len(telegram.messages), 1)
+
+
+class AsianGamesRelayTest(unittest.TestCase):
+    class Client(FakeClient):
+        def game_detail(self, game_id):
+            return {
+                "result": {
+                    "game": {
+                        "gameId": game_id,
+                        "awayTeamCode": "TPE",
+                        "awayTeamName": "차이니스 타이베이",
+                        "homeTeamCode": "KOR",
+                        "homeTeamName": "대한민국",
+                    }
+                }
+            }
+
+    class ServiceCodeClient(FakeClient):
+        def game_detail(self, game_id):
+            return {
+                "result": {
+                    "game": {
+                        "gameId": game_id,
+                        "awayTeamCode": "KR",
+                        "awayTeamName": "대한민국",
+                        "homeTeamCode": "HK",
+                        "homeTeamName": "홍콩",
+                    }
+                }
+            }
+
+    @staticmethod
+    def relay(game_over=False):
+        options = [
+            {
+                "seqno": 1,
+                "text": "1회말 대한민국 공격",
+                "currentGameState": {"homeScore": "0", "awayScore": "0", "out": "0"},
+            },
+            {
+                "seqno": 2,
+                "text": "김도영 : 좌익수 앞 1루타",
+                "batterRecord": {"pcode": "10253", "batOrder": 1, "name": "김도영", "ab": 1, "hit": 1, "seasonHra": 1.0},
+                "currentGameState": {"homeScore": "0", "awayScore": "0", "out": "0", "base1": "10253", "batter": "10253"},
+            },
+        ]
+        if game_over:
+            options.append(
+                {
+                    "seqno": 3,
+                    "text": "경기종료",
+                    "currentGameState": {"homeScore": "1", "awayScore": "0", "out": "3"},
+                }
+            )
+        return {
+            "homeLineup": {"batter": [{"pcode": "10253", "batOrder": 1, "name": "김도영", "ab": 1, "hit": 1, "seasonHra": 1.0}]},
+            "textRelays": [{"title": "1회말 대한민국 공격", "inn": 1, "homeOrAway": "1", "textOptions": options}],
+        }
+
+    def test_live_korea_game_sends_representative_relay(self):
+        with TemporaryDirectory() as directory:
+            settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True, state_path=Path(directory) / "state.json")
+            telegram = FakeTelegram()
+            state = {}
+            game_over = process_asian_games_baseball_relay(
+                self.Client(relay=self.relay()),
+                telegram,
+                settings,
+                state,
+                {"serviceGameId": "relay-game"},
+            )
+
+        self.assertFalse(game_over)
+        self.assertIn("아시안게임 야구 중계 감시 시작", telegram.messages[0])
+        self.assertIn("대한민국 공격 시작 | 1회말", telegram.messages[1])
+        self.assertIn("김도영 : 좌익수 앞 1루타", telegram.messages[2])
+        self.assertEqual(state["asianGamesRelayLastSeq"], 2)
+        self.assertNotIn("lastRelaySeq", state)
+
+    def test_service_game_uses_kr_code_for_korea_batting_filter(self):
+        relay = self.relay()
+        relay["textRelays"][0]["title"] = "1회초 대한민국 공격"
+        relay["textRelays"][0]["homeOrAway"] = "0"
+        relay["textRelays"][0]["textOptions"][0]["text"] = "1회초 대한민국 공격"
+        with TemporaryDirectory() as directory:
+            settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True, state_path=Path(directory) / "state.json")
+            telegram = FakeTelegram()
+            process_asian_games_baseball_relay(
+                self.ServiceCodeClient(relay=relay),
+                telegram,
+                settings,
+                {},
+                {"serviceGameId": "88880922KRHK02026", "statusCode": "STARTED"},
+            )
+
+        self.assertIn("대한민국 공격 시작 | 1회초", telegram.messages[1])
+        self.assertIn("김도영 : 좌익수 앞 1루타", telegram.messages[2])
+
+    def test_korea_team_code_uses_service_game_team_direction(self):
+        self.assertEqual(
+            asian_games_korea_team_code("대한민국", "홍콩", "KR", "HK"),
+            "KR",
+        )
+
+    def test_completed_game_does_not_replay_historical_events(self):
+        with TemporaryDirectory() as directory:
+            settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True, state_path=Path(directory) / "state.json")
+            telegram = FakeTelegram()
+            state = {}
+            game_over = process_asian_games_baseball_relay(
+                self.Client(relay=self.relay(game_over=True)),
+                telegram,
+                settings,
+                state,
+                {"serviceGameId": "relay-game"},
+            )
+
+        self.assertTrue(game_over)
+        self.assertEqual(telegram.messages, [])
+        self.assertEqual(state["asianGamesRelayGameOverSentGameId"], "relay-game")
 
 
 class CancellationReasonTest(unittest.TestCase):

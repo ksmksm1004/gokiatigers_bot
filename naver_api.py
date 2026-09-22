@@ -169,6 +169,38 @@ class NaverSportsClient:
     def games_in_month(self, month: date) -> list[dict[str, Any]]:
         return find_calendar_month_game_dicts(self.calendar(month), month)
 
+    def asian_games_baseball_games(self, day: date) -> list[dict[str, Any]]:
+        """Return the day's Korean national-team baseball games at the Asian Games.
+
+        The Olympic schedule uses an event game ID, while its ``serviceGameId``
+        is the ID served by Naver's baseball text-relay endpoint.
+        """
+        data = self.get_json(
+            "/olympic/asiangames2026/games",
+            params={
+                "fromDate": day.isoformat(),
+                "toDate": day.isoformat(),
+                "disciplineId": "BSB",
+                "includeKorean": "true",
+                "includeMedal": "false",
+                "includeScheduledTv": "false",
+                "page": 1,
+                "pageSize": 100,
+                "sort": "dateAsc",
+                "fields": "all",
+            },
+        )
+        result = data.get("result", data) if isinstance(data, dict) else {}
+        games = result.get("games", []) if isinstance(result, dict) else []
+        return [
+            game
+            for game in games
+            if isinstance(game, dict)
+            and game.get("disciplineId") == "BSB"
+            and game.get("koreaPlayer") is True
+            and game.get("serviceGameId")
+        ]
+
 
 def find_game_dicts(value: Any) -> list[dict[str, Any]]:
     games: list[dict[str, Any]] = []
