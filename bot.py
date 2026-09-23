@@ -3433,6 +3433,10 @@ def sleep_with_command_polling(
         time.sleep(chunk)
         handle_telegram_commands(client, weather_client, telegram, settings, state, current_game_id(state))
         poll_now = datetime.now(settings.timezone)
+        try:
+            process_due_asian_games_baseball_relay(client, telegram, settings, state, poll_now)
+        except Exception:
+            logging.exception("Asian Games baseball relay check failed during idle polling.")
         send_due_kia_news(client, telegram, settings, state, poll_now)
         send_due_kia_highlight(client, telegram, settings, state, poll_now)
         send_due_kia_shorts(client, telegram, settings, state, poll_now)

@@ -1,4 +1,5 @@
 import unittest
+from contextlib import ExitStack
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ from bot import (
     player_selection_keyboard,
     process_relay,
     process_asian_games_baseball_relay,
+    sleep_with_command_polling,
     record_options_keyboard,
     remember_plate_result,
     remember_plate_rbi_baseline,
@@ -1007,6 +1009,30 @@ class PitchingChangePhotoTest(unittest.TestCase):
 
 
 class AsianGamesRelayTest(unittest.TestCase):
+    def test_idle_wait_polls_asian_games_and_recovers_after_failure(self):
+        settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True)
+        start = datetime(2026, 9, 23, 12, tzinfo=settings.timezone)
+        client, telegram, state = FakeClient(), FakeTelegram(), {}
+        with ExitStack() as stack:
+            clock = stack.enter_context(patch("bot.datetime"))
+            clock.now.side_effect = [
+                start + timedelta(seconds=offset) for offset in (0, 0, 5, 5, 10, 10)
+            ]
+            sleep = stack.enter_context(patch("bot.time.sleep"))
+            for name in (
+                "handle_telegram_commands", "send_due_kia_news",
+                "send_due_kia_highlight", "send_due_kia_shorts",
+            ):
+                stack.enter_context(patch("bot." + name))
+            poll = stack.enter_context(patch("bot.process_due_asian_games_baseball_relay"))
+            poll.side_effect = [RuntimeError("temporary API failure"), None]
+            with self.assertLogs(level="ERROR"):
+                sleep_with_command_polling(client, object(), telegram, settings, state, 10)
+
+        self.assertEqual(poll.call_count, 2)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(poll.call_args.args, (client, telegram, settings, state, start + timedelta(seconds=10)))
+
     class Client(FakeClient):
         def game_detail(self, game_id):
             return {
