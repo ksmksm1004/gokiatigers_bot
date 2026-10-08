@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+logs/*.log
+logs/state.json
+logs/*.tmp
+# Separate local projects are not part of this bot repository.
+/moment_studio/
+/single_trader/

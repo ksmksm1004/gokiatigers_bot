@@ -1,0 +1,117 @@
+import unittest
+from io import BytesIO
+
+from PIL import Image
+
+from lineup_image import IMAGE_SIZE, current_defensive_preview, defensive_lineup_players, render_defensive_lineup_image
+
+
+class DefensiveLineupImageTest(unittest.TestCase):
+    def test_current_defense_uses_substitutes_positions_and_latest_pitcher(self):
+        preview = self.preview()
+        batters = [
+            {"pcode": p["playerCode"], "name": p["playerName"], "batOrder": p["batorder"],
+             "pos": p["position"], "posName": p["positionName"], "seqno": 1}
+            for p in preview["awayTeamLineUp"]["fullLineUp"] if p["batorder"]
+        ]
+        batters[0]["cout"] = "true"
+        batters.append({"pcode": "new", "name": "교체선수", "batOrder": 1, "pos": 9, "seqno": 2})
+        batters[4]["pos"] = 7
+        relay = {"awayLineup": {"batter": batters, "pitcher": [
+            {"pcode": "new-p", "name": "구원투수", "seqno": 2},
+            {"pcode": "old-p", "name": "선발투수", "seqno": 1},
+        ]}}
+        current = current_defensive_preview(preview, relay, "away")
+        players = {p["positionCode"]: p["playerName"] for p in defensive_lineup_players(current, "away")}
+        self.assertEqual(players["9"], "교체선수")
+        self.assertEqual(players["7"], "나성범")
+        self.assertEqual(players["1"], "구원투수")
+        self.assertEqual(players["0"], "김도영")
+        self.assertNotIn("박재현", players.values())
+        self.assertIsNotNone(render_defensive_lineup_image(current, "away", lambda url: self.photo_bytes()))
+
+    @staticmethod
+    def preview():
+        positions = [
+            (None, "1", "선발투수", "황동하"),
+            (1, "7", "좌익수", "박재현"),
+            (2, "4", "2루수", "김선빈"),
+            (3, "0", "지명타자", "김도영"),
+            (4, "3", "1루수", "카스트로"),
+            (5, "9", "우익수", "나성범"),
+            (6, "5", "3루수", "윤도현"),
+            (7, "2", "포수", "한준수"),
+            (8, "6", "유격수", "정현창"),
+            (9, "8", "중견수", "김호령"),
+        ]
+        return {
+            "gameInfo": {"aCode": "HT", "aName": "KIA", "gdate": 20260820},
+            "awayTeamLineUp": {
+                "fullLineUp": [
+                    {
+                        "playerCode": f"player-{position}",
+                        "playerName": name,
+                        "batorder": order,
+                        "position": position,
+                        "positionName": position_name,
+                    }
+                    for order, position, position_name, name in positions
+                ]
+            },
+        }
+
+    @staticmethod
+    def photo_bytes():
+        image = Image.new("RGBA", (80, 100), (200, 30, 40, 255))
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue()
+
+    def test_lineup_players_include_designated_hitter_and_all_defenders(self):
+        players = defensive_lineup_players(self.preview(), "away")
+
+        self.assertEqual([player["positionCode"] for player in players], list("0123456789"))
+        self.assertEqual(players[0]["playerName"], "김도영")
+
+    def test_rendered_image_is_a_complete_png(self):
+        requested_urls = []
+
+        def load_photo(url):
+            requested_urls.append(url)
+            return self.photo_bytes()
+
+        content = render_defensive_lineup_image(self.preview(), "away", load_photo)
+
+        self.assertIsNotNone(content)
+        rendered = Image.open(BytesIO(content))
+        self.assertEqual(rendered.format, "PNG")
+        self.assertEqual(rendered.size, IMAGE_SIZE)
+        self.assertEqual(len(requested_urls), 10)
+        self.assertEqual(rendered.getpixel((180, 745)), (200, 30, 40))
+        self.assertEqual(rendered.getpixel((0, 0)), (47, 125, 69))
+
+    def test_lineup_without_designated_hitter_still_renders(self):
+        preview = self.preview()
+        preview["awayTeamLineUp"]["fullLineUp"] = [
+            player for player in preview["awayTeamLineUp"]["fullLineUp"]
+            if player["position"] != "0"
+        ]
+        content = render_defensive_lineup_image(preview, "away", lambda _url: self.photo_bytes())
+        self.assertIsNotNone(content)
+
+    def test_numeric_zero_position_identifies_designated_hitter(self):
+        preview = self.preview()
+        player = preview["awayTeamLineUp"]["fullLineUp"][3]
+        player["position"] = 0
+        player["positionName"] = ""
+        self.assertEqual(defensive_lineup_players(preview, "away")[0]["playerName"], "김도영")
+
+    def test_incomplete_defense_does_not_render(self):
+        preview = self.preview()
+        preview["awayTeamLineUp"]["fullLineUp"] = preview["awayTeamLineUp"]["fullLineUp"][:-1]
+
+        self.assertIsNone(render_defensive_lineup_image(preview, "away", lambda _url: self.photo_bytes()))
+
+
+if __name__ == "__main__":
+    unittest.main()
