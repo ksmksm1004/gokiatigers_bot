@@ -892,7 +892,7 @@ class PitchingChangePhotoTest(unittest.TestCase):
                 home_score=0,
                 away_score=0,
                 home_or_away="0",
-                current_state={"out": "0"},
+                current_state={"out": "0", "ball": "1", "strike": "0"},
             ),
             RelayEvent(
                 event_id=2,
@@ -940,7 +940,7 @@ class PitchingChangePhotoTest(unittest.TestCase):
         )
 
         self.assertEqual(telegram.message_chat_ids, ["chat-full", "chat-full", "chat-full"])
-        self.assertIn("1구 볼", telegram.messages[0])
+        self.assertIn("1구 볼 (1-0)", telegram.messages[0])
         self.assertIn("최지훈 : 우익수 앞 1루타", telegram.messages[1])
         self.assertIn("2회초 SSG 공격", telegram.messages[2])
 

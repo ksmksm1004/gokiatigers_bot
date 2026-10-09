@@ -905,6 +905,44 @@ class HalfOutSummaryTest(unittest.TestCase):
 
 
 class CompactBatterFormatTest(unittest.TestCase):
+    def test_pitch_messages_include_api_ball_strike_count(self):
+        cases = [
+            ("1구 파울", "0", "1", "0-1"),
+            ("2구 헛스윙", "0", "2", "0-2"),
+            ("3구 볼", "1", "2", "1-2"),
+            ("4구 볼", "2", "2", "2-2"),
+            ("5구 파울", 2, 2, "2-2"),
+            ("6구 헛스윙", 2, 3, "2-3"),
+            ("7구 볼", 4, 2, "4-2"),
+        ]
+        for text, balls, strikes, expected in cases:
+            with self.subTest(text=text):
+                event = RelayEvent(
+                    event_id=1, inning=9, half="초", text=text,
+                    home_score=2, away_score=4,
+                    current_state={"out": "1", "ball": balls, "strike": strikes},
+                )
+                message = format_relay_event(event, "KIA", "NC")
+                self.assertEqual(message.splitlines()[2], f"{text} ({expected})")
+
+    def test_pitch_count_omits_missing_invalid_and_non_pitch_data(self):
+        cases = [
+            ("1구 볼", {}),
+            ("1구 볼", {"ball": 1}),
+            ("1구 볼", {"ball": "", "strike": None}),
+            ("1구 볼", {"ball": "bad", "strike": 1}),
+            ("1구 볼", {"ball": -1, "strike": 1}),
+            ("1구 볼", {"ball": 1, "strike": 4}),
+            ("김도영 : 볼넷", {"ball": 4, "strike": 2}),
+        ]
+        for text, state in cases:
+            with self.subTest(text=text, state=state):
+                event = RelayEvent(
+                    event_id=1, inning=9, half="초", text=text,
+                    home_score=2, away_score=4, current_state=state,
+                )
+                self.assertEqual(format_relay_event(event, "KIA", "NC").splitlines()[2], text)
+
     def test_relay_header_includes_current_out_count(self):
         event = RelayEvent(
             event_id=1,

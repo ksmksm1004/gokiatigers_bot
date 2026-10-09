@@ -1015,6 +1015,9 @@ def format_relay_event(
     out_count = _relay_out_count(event)
     out_text = f" ({out_count} out)" if out_count is not None and not event.is_attack_start else ""
     play_text = event.text
+    pitch_count = _pitch_count_label(event)
+    if pitch_count:
+        play_text = f"{play_text} ({pitch_count})"
     if is_batter_result_event(event) or (is_runner_event(event) and is_steal_event(event)):
         base_label = _base_occupancy_label(event, base_state)
         if base_label:
@@ -1033,6 +1036,20 @@ def format_relay_event(
     if stats:
         lines += ["", stats]
     return "\n".join(lines)
+
+
+def _pitch_count_label(event: RelayEvent) -> str:
+    if not re.match(r"^\d+구\s", event.text):
+        return ""
+    state = event.current_state or {}
+    try:
+        balls = int(state.get("ball"))
+        strikes = int(state.get("strike"))
+    except (TypeError, ValueError):
+        return ""
+    if not (0 <= balls <= 4 and 0 <= strikes <= 3):
+        return ""
+    return f"{balls}-{strikes}"
 
 
 def _relay_out_count(event: RelayEvent) -> int | None:
