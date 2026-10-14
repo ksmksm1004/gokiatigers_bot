@@ -36,6 +36,7 @@ from bot import (
     send_lineup_once,
     send_daily_rankings_if_all_games_done,
     send_next_kia_game_once,
+    send_due_next_kia_game,
     send_due_kia_shorts,
     send_due_kia_news,
     send_due_kia_highlight,
@@ -2442,6 +2443,44 @@ class FinalScoreTest(unittest.TestCase):
 
 
 class TeamScheduleTest(unittest.TestCase):
+    def test_next_postseason_schedule_retries_after_registration_delay_and_legacy_notice(self):
+        class Client:
+            available = False
+            calls = 0
+
+            def calendar(self, month):
+                self.calls += 1
+                return {"result": {"dates": [{
+                    "ymd": "2026-10-17",
+                    "gameInfos": [{
+                        "gameId": "33331017LGHT02026", "awayTeamCode": "LG",
+                        "homeTeamCode": "HT", "statusCode": "BEFORE",
+                    }] if self.available else [],
+                }]}}
+
+            def game_detail(self, game_id):
+                return {"result": {"game": {
+                    "gameId": game_id, "roundCode": "kbo_ps_sp",
+                    "gameDateTime": "2026-10-17T14:00:00", "stadium": "광주",
+                }}}
+
+        with TemporaryDirectory() as directory:
+            settings = Settings(telegram_token="", telegram_chat_id="", dry_run=True, state_path=Path(directory) / "state.json")
+            state = {"nextGameSentDate": "2026-10-14"}
+            telegram, client = FakeTelegram(), Client()
+            send_next_kia_game_once(client, telegram, settings, state, date(2026, 10, 14))
+            calls = client.calls
+            send_next_kia_game_once(client, telegram, settings, state, date(2026, 10, 14))
+            self.assertEqual(client.calls, calls)
+            self.assertEqual(len(telegram.messages), 1)
+            client.available = True
+            state["nextGameScheduleCheckAt"] = "2026-10-14T00:00:00+09:00"
+            send_due_next_kia_game(client, telegram, settings, state)
+            send_next_kia_game_once(client, telegram, settings, state, date(2026, 10, 14))
+            self.assertEqual(len(telegram.messages), 2)
+            self.assertEqual(telegram.messages[-1], "KIA 다음 경기\nLG vs KIA\n10/17(토) 14:00\n광주")
+            self.assertNotIn("nextGameScheduleCheckAt", state)
+
     def test_next_game_skips_cancelled_date_and_sends_only_once(self):
         class Client:
             def calendar(self, month):

@@ -271,6 +271,26 @@ class FormatPreviewTest(unittest.TestCase):
 
 
 class PostseasonFormatTest(unittest.TestCase):
+    def test_wildcard_excludes_advantage_only_when_api_includes_it(self):
+        cases = [
+            (1, 0, 2, 0, "두산 0승 0무 1패", "LG 1승 0무 0패", True),
+            (1, 0, 1, 0, "두산 0승 0무 1패", "LG 1승 0무 0패", False),
+            (2, 2, 1, 0, "두산 2승 0무 0패", "LG 0승 0무 2패", True),
+            (1, 0, 1, 1, "두산 0승 1무 0패", "LG 0승 1무 0패", True),
+            (2, 1, 2, 0, "두산 1승 0무 1패", "LG 1승 0무 1패", True),
+        ]
+        for number, away, home, draws, away_text, home_text, advantage in cases:
+            with self.subTest(number=number, away=away, home=home, draws=draws):
+                message = format_postseason_series_status({
+                    "roundCode": "kbo_ps_wd", "seriesGameNo": number,
+                    "awayTeamName": "두산", "homeTeamName": "LG",
+                    "seriesOutcome": {"away": away, "home": home, "draw": draws},
+                })
+                self.assertIn("실제 경기 전적", message)
+                self.assertIn(away_text, message)
+                self.assertIn(home_text, message)
+                self.assertEqual("어드밴티지 1승 제외" in message, advantage)
+
     def test_game_summary_detects_postseason_game_id(self):
         summary = parse_game_summary(
             {

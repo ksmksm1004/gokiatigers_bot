@@ -3204,7 +3204,14 @@ def send_next_kia_game_once(
     state: dict[str, Any],
     game_date: date,
 ) -> None:
-    if state.get("nextGameSentDate") == game_date.isoformat():
+    if (
+        state.get("nextGameSentDate") == game_date.isoformat()
+        and state.get("nextGameScheduleVersion") == 2
+    ):
+        return
+    now = datetime.now(settings.timezone)
+    next_check = _parse_dt(state.get("nextGameScheduleCheckAt"))
+    if state.get("nextGamePendingDate") == game_date.isoformat() and next_check and now < next_check:
         return
     try:
         games = fetch_team_schedule_games(
@@ -3212,7 +3219,12 @@ def send_next_kia_game_once(
         )
         lines = ["KIA 다음 경기"]
         if not games:
-            lines.append("확정된 다음 경기 일정이 없습니다.")
+            if state.get("nextGamePendingDate") != game_date.isoformat():
+                telegram.send_message("KIA 다음 경기\n다음 경기 일정이 아직 등록되지 않았습니다. 확인 후 안내하겠습니다.")
+            state["nextGamePendingDate"] = game_date.isoformat()
+            state["nextGameScheduleCheckAt"] = (now + timedelta(minutes=10)).isoformat()
+            save_state(settings.state_path, state)
+            return
         else:
             game = games[0]
             detail = unwrap(client.game_detail(game["gameId"]), "game") if game["gameId"] else {}
@@ -3232,10 +3244,32 @@ def send_next_kia_game_once(
                 lines.append(str(detail["stadium"]))
     except Exception:
         logging.exception("Failed to fetch next KIA game after %s.", game_date)
+        state["nextGamePendingDate"] = game_date.isoformat()
+        state["nextGameScheduleCheckAt"] = (now + timedelta(minutes=10)).isoformat()
+        save_state(settings.state_path, state)
         return
     telegram.send_message("\n".join(lines))
     state["nextGameSentDate"] = game_date.isoformat()
+    state["nextGameScheduleVersion"] = 2
+    state.pop("nextGamePendingDate", None)
+    state.pop("nextGameScheduleCheckAt", None)
     save_state(settings.state_path, state)
+
+
+def send_due_next_kia_game(
+    client: NaverSportsClient,
+    telegram: TelegramBot,
+    settings: Settings,
+    state: dict[str, Any],
+) -> None:
+    pending_date = state.get("nextGamePendingDate")
+    if not pending_date:
+        return
+    try:
+        game_date = date.fromisoformat(str(pending_date))
+    except ValueError:
+        return
+    send_next_kia_game_once(client, telegram, settings, state, game_date)
 
 
 def send_daily_rankings_if_all_games_done(
@@ -3482,6 +3516,7 @@ def sleep_with_command_polling(
         except Exception:
             logging.exception("Asian Games baseball relay check failed during idle polling.")
         send_due_kia_news(client, telegram, settings, state, poll_now)
+        send_due_next_kia_game(client, telegram, settings, state)
         send_due_kia_highlight(client, telegram, settings, state, poll_now)
         send_due_kia_shorts(client, telegram, settings, state, poll_now)
         remaining = max(0, int((deadline - datetime.now(settings.timezone)).total_seconds()))
@@ -3513,6 +3548,7 @@ def main() -> None:
             now = datetime.now(settings.timezone)
             handle_telegram_commands(client, weather_client, telegram, settings, state, current_game_id(state))
             send_due_kia_news(client, telegram, settings, state, now)
+            send_due_next_kia_game(client, telegram, settings, state)
             send_due_kia_highlight(client, telegram, settings, state, now)
             send_due_kia_shorts(client, telegram, settings, state, now)
             try:
@@ -3555,6 +3591,9 @@ def main() -> None:
                     "dailyScoresSentDate": state.get("dailyScoresSentDate"),
                     "dailyRankingSentDate": state.get("dailyRankingSentDate"),
                     "nextGameSentDate": state.get("nextGameSentDate"),
+                    "nextGameScheduleVersion": state.get("nextGameScheduleVersion"),
+                    "nextGamePendingDate": state.get("nextGamePendingDate"),
+                    "nextGameScheduleCheckAt": state.get("nextGameScheduleCheckAt"),
                     "dailyRankingTargetDate": state.get("dailyRankingTargetDate"),
                     "nextDailyRankingCheckAt": state.get("nextDailyRankingCheckAt"),
                     "nextPreviewCheckAt": state.get("nextPreviewCheckAt"),

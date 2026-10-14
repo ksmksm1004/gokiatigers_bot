@@ -1427,13 +1427,23 @@ def format_postseason_series_status(game: dict[str, Any]) -> str:
         game_number = _to_int(game.get("seriesGameNo") or game.get("round"))
         suffix = f" {game_number}차전 종료" if game_number else ""
         return f"KBO {round_name}{suffix}"
-    return "\n".join(
-        [
-            f"KBO {round_name} 시리즈 전적",
-            f"{away_name} {away_wins}승 {draws}무 {home_wins}패",
-            f"{home_name} {home_wins}승 {draws}무 {away_wins}패",
-        ]
+    wildcard = str(game.get("roundCode") or "").lower() == "kbo_ps_wd"
+    game_number = _to_int(game.get("seriesGameNo") or game.get("round"))
+    advantage_included = (
+        wildcard and game_number > 0 and home_wins > 0
+        and away_wins + home_wins + draws == game_number + 1
     )
+    if advantage_included:
+        home_wins -= 1
+    heading = "실제 경기 전적" if wildcard else "시리즈 전적"
+    lines = [
+        f"KBO {round_name} {heading}",
+        f"{away_name} {away_wins}승 {draws}무 {home_wins}패",
+        f"{home_name} {home_wins}승 {draws}무 {away_wins}패",
+    ]
+    if advantage_included:
+        lines.append(f"※ {home_name}의 어드밴티지 1승 제외")
+    return "\n".join(lines)
 
 
 TEAM_RECORD_OPTIONS = {
