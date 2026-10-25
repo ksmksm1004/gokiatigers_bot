@@ -7,3 +7,4 @@ logs/*.tmp
 # Separate local projects are not part of this bot repository.
 /moment_studio/
 /single_trader/
+.venv
