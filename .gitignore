@@ -8,3 +8,5 @@ logs/*.tmp
 /moment_studio/
 /single_trader/
 .venv
+.DS_Store
+logs/*
