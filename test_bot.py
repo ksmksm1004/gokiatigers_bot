@@ -883,6 +883,29 @@ class RecentGamesCommandTest(unittest.TestCase):
 
 
 class PitchingChangePhotoTest(unittest.TestCase):
+    def test_basic_relay_sends_kia_defensive_changes_without_photos(self):
+        texts = [
+            "대주자 김규성 : 2루수(으)로 수비위치 변경",
+            "우익수 나성범 : 중견수 김호령 (으)로 교체",
+            "중견수 박정우 : 우익수(으)로 수비위치 변경",
+        ]
+        events = [
+            RelayEvent(
+                event_id=index, inning=8, half="말", text=text,
+                home_score=1, away_score=5, home_or_away="1",
+                current_state={"out": "0"},
+            )
+            for index, text in enumerate(texts, 1)
+        ]
+        telegram = FakeTelegram()
+        settings = Settings(telegram_token="", telegram_chat_id="chat-basic", dry_run=True)
+        dispatch_relay_events(
+            telegram, settings, {}, {}, events, events, set(), "KIA", "삼성", "HT", "SS",
+        )
+        self.assertEqual(len(telegram.messages), 3)
+        for message, text in zip(telegram.messages, texts):
+            self.assertEqual(message, f"중계 | 8회말 (0 out)\nKIA 5 : 1 삼성\n{text}")
+
     def test_full_relay_mode_sends_opponent_and_pitch_events_only_to_selected_room(self):
         events = [
             RelayEvent(
