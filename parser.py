@@ -443,6 +443,14 @@ def is_video_review_event(event: RelayEvent) -> bool:
     return "비디오 판독" in event.text or "비디오판독" in event.text
 
 
+def is_defensive_change_event(event: RelayEvent) -> bool:
+    return bool(re.match(
+        r"^(?:투수|포수|1루수|2루수|3루수|유격수|좌익수|중견수|우익수|대주자|대타)\s+"
+        r".+:\s*.+(?:수비\s*위치\s*변경|교체)",
+        event.text,
+    ))
+
+
 def is_hit_event(event: RelayEvent) -> bool:
     return any(word in event.text for word in ("1루타", "2루타", "3루타", "안타", "홈런"))
 
@@ -484,6 +492,8 @@ def should_send_relay_event(event: RelayEvent, home_code: str, away_code: str, t
         return True
     if event.is_pitching_change or event.is_game_marker:
         return True
+    if is_defensive_change_event(event):
+        return is_kia_pitching(event, home_code, away_code, team_code)
     if event.is_score_event:
         return True
     if is_kia_batter_event(event, home_code, away_code, team_code):
@@ -1028,7 +1038,7 @@ def format_relay_event(
         play_text,
     ]
 
-    if event.is_game_marker or event.is_pitching_change or not show_player_stats:
+    if event.is_game_marker or event.is_pitching_change or is_defensive_change_event(event) or not show_player_stats:
         return "\n".join(lines)
 
     player = player_record or event.batter_record or event.player_info or {}

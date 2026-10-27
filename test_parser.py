@@ -925,6 +925,36 @@ class HalfOutSummaryTest(unittest.TestCase):
 
 
 class CompactBatterFormatTest(unittest.TestCase):
+    def test_basic_relay_includes_only_kia_defensive_changes(self):
+        texts = [
+            "대주자 김규성 : 2루수(으)로 수비위치 변경",
+            "우익수 나성범 : 중견수 김호령 (으)로 교체",
+            "중견수 박정우 : 우익수(으)로 수비위치 변경",
+            "대타 김선빈 : 2루수(으)로 수비 위치 변경",
+        ]
+        for text in texts:
+            for home, away, side, expected in [
+                ("SS", "HT", "1", True),
+                ("HT", "SS", "0", True),
+                ("SS", "HT", "0", False),
+                ("HT", "SS", "1", False),
+            ]:
+                with self.subTest(text=text, home=home, side=side):
+                    event = RelayEvent(
+                        event_id=1, inning=8, half="말" if side == "1" else "초",
+                        text=text, home_score=1, away_score=5, home_or_away=side,
+                        current_state={"out": "0"},
+                        batter_record={"name": "상대타자", "ab": 3, "hit": 1},
+                    )
+                    self.assertEqual(should_send_relay_event(event, home, away), expected)
+                    message = format_relay_event(event, "KIA", "삼성")
+                    self.assertEqual(message.splitlines()[2:], [text])
+
+    def test_basic_relay_still_excludes_opponent_pinch_hitter_and_pitch(self):
+        for text in ["9번타자 홍길동 : 대타 김선수 (으)로 교체", "1구 볼"]:
+            event = RelayEvent(1, 8, "말", text, 1, 5, home_or_away="1")
+            self.assertFalse(should_send_relay_event(event, "SS", "HT"))
+
     def test_pitch_messages_include_api_ball_strike_count(self):
         cases = [
             ("1구 파울", "0", "1", "0-1"),
