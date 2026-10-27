@@ -9,6 +9,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from requests import RequestException
+
 from config import Settings, get_settings
 from kbo_api import (
     KBOPlayerCandidate,
@@ -596,13 +598,31 @@ def get_detailed_game(
     game_id = str(game.get("gameId") or "")
     if not game_id:
         return game
-    cached = state.get("detailedGame")
-    if not force and state.get("detailedGameId") == game_id and cached:
+    cached = state.get("detailedGame") if state.get("detailedGameId") == game_id else None
+    now = datetime.now(settings.timezone)
+    retry_at = _parse_dt(state.get("nextGameDetailRetryAt"))
+    if cached and (not force or (retry_at and now < retry_at)):
         return cached
     if settings.naver_game_id:
         return game
-    preview = unwrap(client.preview(game_id), "previewData")
-    detail = preview.get("gameInfo", {}).copy()
+    try:
+        preview = unwrap(client.preview(game_id), "previewData")
+        detail = preview.get("gameInfo", {}).copy()
+    except RequestException:
+        # A preview outage must not prevent the independent relay request.
+        # Only reuse details belonging to this game, and periodically retry.
+        if cached:
+            state["nextGameDetailRetryAt"] = (datetime.now(settings.timezone) + timedelta(seconds=60)).isoformat()
+            save_state(settings.state_path, state)
+            logging.warning("Game preview unavailable for %s; continuing relay with cached details.", game_id)
+            return cached
+        detail = unwrap(client.game_detail(game_id), "game").copy()
+        if not detail:
+            raise
+        state["nextGameDetailRetryAt"] = (datetime.now(settings.timezone) + timedelta(seconds=60)).isoformat()
+        logging.warning("Game preview unavailable for %s; using game detail endpoint.", game_id)
+    else:
+        state.pop("nextGameDetailRetryAt", None)
     detail["gameId"] = game_id
     state["detailedGameId"] = game_id
     state["detailedGame"] = detail
