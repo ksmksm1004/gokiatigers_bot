@@ -7,6 +7,8 @@ from typing import Any
 from urllib.parse import urljoin
 
 import requests
+from curl_cffi import requests as browser_requests
+from curl_cffi.requests import exceptions as browser_errors
 
 
 NAVER_API_BASE = "https://api-gw.sports.naver.com/"
@@ -14,13 +16,11 @@ NAVER_API_BASE = "https://api-gw.sports.naver.com/"
 
 class NaverSportsClient:
     def __init__(self) -> None:
-        self.session = requests.Session()
+        # Naver may leave non-browser TLS/HTTP requests unanswered even with
+        # a browser User-Agent. Keep the transport and generated headers aligned.
+        self.session = browser_requests.Session(impersonate="chrome")
         self.session.headers.update(
             {
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
-                ),
                 "Accept": "application/json, text/plain, */*",
                 "Origin": "https://m.sports.naver.com",
                 "Referer": "https://m.sports.naver.com/",
@@ -46,11 +46,21 @@ class NaverSportsClient:
                 return response.json()
             except requests.HTTPError:
                 raise
-            except (requests.ConnectionError, requests.Timeout):
+            except browser_errors.HTTPError as exc:
+                raise requests.HTTPError(str(exc), response=exc.response) from exc
+            except (requests.ConnectionError, requests.Timeout,
+                    browser_errors.ConnectionError, browser_errors.Timeout) as exc:
                 if attempt >= 2:
+                    # Preserve the requests exception contract used by bot.py.
+                    if isinstance(exc, browser_errors.Timeout):
+                        raise requests.Timeout(str(exc)) from exc
+                    if isinstance(exc, browser_errors.ConnectionError):
+                        raise requests.ConnectionError(str(exc)) from exc
                     raise
                 logging.warning("Naver API request failed for %s. Retrying.", url)
                 time.sleep(0.5 * (2**attempt))
+            except browser_errors.RequestException as exc:
+                raise requests.RequestException(str(exc), response=exc.response) from exc
         return {}
 
     def preview(self, game_id: str) -> dict[str, Any]:

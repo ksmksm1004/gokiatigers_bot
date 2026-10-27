@@ -250,6 +250,8 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
+네이버 스포츠 API는 `curl_cffi`의 Chrome 호환 TLS·HTTP 연결로 조회합니다. 브라우저에서는 중계가 표시되는데 일반 `requests` 호출이 타임아웃되는 경우를 처리하기 위한 설정입니다. 이 변경을 받을 때는 봇을 실행하는 가상환경에서 `pip install -r requirements.txt`를 실행한 뒤 재시작합니다.
+
 KBO 예상 달성 기록 이미지는 macOS Vision으로 읽습니다. 처음 사용할 때 저장소의 `kbo_record_ocr.m`을 `/usr/bin/clang`으로 임시 디렉터리에 한 번 컴파일하므로 Xcode Command Line Tools가 필요합니다. 설치되어 있지 않다면 `xcode-select --install`을 먼저 실행합니다. OCR에 실패해도 기존 경기 종료 기록 발송은 계속됩니다.
 
 `.env`에 텔레그램 봇 토큰과 대상 채팅 ID를 입력합니다.

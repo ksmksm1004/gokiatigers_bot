@@ -3,6 +3,7 @@ from datetime import date
 from unittest.mock import Mock, patch
 
 import requests
+from curl_cffi.requests import exceptions as browser_errors
 
 from naver_api import NaverSportsClient, find_calendar_game_dicts, find_calendar_month_game_dicts, unwrap
 
@@ -21,6 +22,53 @@ class CalendarOnlyClient(NaverSportsClient):
 
 
 class NaverApiTest(unittest.TestCase):
+    @patch("naver_api.time.sleep")
+    def test_browser_connection_reset_is_retried(self, sleep):
+        response = Mock(status_code=200)
+        response.json.return_value = {"result": {"textRelayData": {"inn": 8}}}
+        client = NaverSportsClient()
+        client.session = Mock()
+        client.session.get.side_effect = [browser_errors.ConnectionError("reset"), response]
+        self.assertEqual(client.relay("game")["result"]["textRelayData"]["inn"], 8)
+        self.assertEqual(client.session.get.call_count, 2)
+
+    @patch("naver_api.time.sleep")
+    def test_browser_network_errors_keep_requests_contract_after_retries(self, sleep):
+        for transport_error, public_error in (
+            (browser_errors.Timeout, requests.Timeout),
+            (browser_errors.ConnectionError, requests.ConnectionError),
+        ):
+            with self.subTest(error=transport_error):
+                client = NaverSportsClient()
+                client.session = Mock()
+                client.session.get.side_effect = transport_error("unavailable")
+                with self.assertRaises(public_error):
+                    client.preview("game")
+                self.assertEqual(client.session.get.call_count, 3)
+
+    def test_browser_http_error_keeps_status_and_is_not_retried(self):
+        response = Mock(status_code=404)
+        response.raise_for_status.side_effect = browser_errors.HTTPError("not found", response=response)
+        client = NaverSportsClient()
+        client.session = Mock()
+        client.session.get.return_value = response
+        with self.assertRaises(requests.HTTPError) as caught:
+            client.relay("missing")
+        self.assertEqual(caught.exception.response.status_code, 404)
+        self.assertEqual(client.session.get.call_count, 1)
+
+    @patch("naver_api.time.sleep")
+    def test_service_unavailable_is_retried_before_parsing(self, sleep):
+        busy = Mock(status_code=503)
+        ok = Mock(status_code=200)
+        ok.json.return_value = {"success": True}
+        client = NaverSportsClient()
+        client.session = Mock()
+        client.session.get.side_effect = [busy, ok]
+        self.assertEqual(client.get_json("/schedule/test"), {"success": True})
+        busy.json.assert_not_called()
+        self.assertEqual(client.session.get.call_count, 2)
+
     def test_unwrap_converts_null_payload_to_empty_dict(self):
         self.assertEqual(unwrap({"result": {"textRelayData": None}}, "textRelayData"), {})
 
