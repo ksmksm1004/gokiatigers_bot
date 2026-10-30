@@ -1050,11 +1050,13 @@ class AsianGamesRelayTest(unittest.TestCase):
             ):
                 stack.enter_context(patch("bot." + name))
             poll = stack.enter_context(patch("bot.process_due_asian_games_baseball_relay"))
+            roster_poll = stack.enter_context(patch("bot.send_due_kia_roster_news"))
             poll.side_effect = [RuntimeError("temporary API failure"), None]
             with self.assertLogs(level="ERROR"):
                 sleep_with_command_polling(client, object(), telegram, settings, state, 10)
 
         self.assertEqual(poll.call_count, 2)
+        self.assertEqual(roster_poll.call_count, 2)
         self.assertEqual(sleep.call_count, 2)
         self.assertEqual(poll.call_args.args, (client, telegram, settings, state, start + timedelta(seconds=10)))
 

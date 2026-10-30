@@ -90,10 +90,11 @@ class NaverSportsClient:
         section_id: str = "kbaseball",
         page_size: int = 40,
         date_yyyymmdd: str | None = None,
+        page: int = 1,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "sort": "latest",
-            "page": 1,
+            "page": page,
             "pageSize": page_size,
             "isPhoto": "N",
         }

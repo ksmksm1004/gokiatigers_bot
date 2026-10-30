@@ -12,6 +12,7 @@ from typing import Any
 from requests import RequestException
 
 from config import Settings, get_settings
+from stove_news import poll_roster_news
 from kbo_api import (
     KBOPlayerCandidate,
     KBOPlayerClient,
@@ -508,6 +509,22 @@ def get_cached_today_game(
             return cached_game
         carryover_status = str(carryover_detail.get("statusCode") or "").upper()
         if (
+            not carryover_detail.get("suspended")
+            and (carryover_status in TERMINAL_SCHEDULE_STATUS or is_cancelled_game(carryover_detail))
+        ):
+            # An unsent final report must not hold today's game behind yesterday.
+            today_game = find_today_kia_game(client, settings, now)
+            if today_game and str(today_game.get("gameId") or "") != cached_game_id:
+                state["scheduleDate"] = today
+                state["scheduledGame"] = today_game
+                state.pop("nextScheduleCheckAt", None)
+                save_state(settings.state_path, state)
+                logging.info(
+                    "Previous game %s is %s; switching to today's game %s before pending final report.",
+                    cached_game_id, carryover_status, today_game.get("gameId"),
+                )
+                return today_game
+        if (
             carryover_detail.get("suspended")
             or carryover_status in SUSPENDED_SCHEDULE_STATUS
             or carryover_status in ACTIVE_SCHEDULE_STATUS
@@ -606,21 +623,27 @@ def get_detailed_game(
     if settings.naver_game_id:
         return game
     try:
-        preview = unwrap(client.preview(game_id), "previewData")
-        detail = preview.get("gameInfo", {}).copy()
+        # Preview gameInfo can remain at status "1" even after a game ends.
+        # The game endpoint supplies the current status and actual start time.
+        current = unwrap(client.game_detail(game_id), "game")
+        if not isinstance(current, dict) or not current:
+            raise RequestException("Game detail response is empty")
+        detail = merge_game_status(cached or game, current)
     except RequestException:
-        # A preview outage must not prevent the independent relay request.
+        # A detail outage must not prevent the independent relay request.
         # Only reuse details belonging to this game, and periodically retry.
         if cached:
             state["nextGameDetailRetryAt"] = (datetime.now(settings.timezone) + timedelta(seconds=60)).isoformat()
             save_state(settings.state_path, state)
-            logging.warning("Game preview unavailable for %s; continuing relay with cached details.", game_id)
+            logging.warning("Game detail unavailable for %s; continuing relay with cached details.", game_id)
             return cached
-        detail = unwrap(client.game_detail(game_id), "game").copy()
+        preview = unwrap(client.preview(game_id), "previewData")
+        detail = preview.get("gameInfo", {}).copy()
         if not detail:
             raise
+        detail = merge_game_status(detail, game)
         state["nextGameDetailRetryAt"] = (datetime.now(settings.timezone) + timedelta(seconds=60)).isoformat()
-        logging.warning("Game preview unavailable for %s; using game detail endpoint.", game_id)
+        logging.warning("Game detail unavailable for %s; using preview and schedule metadata.", game_id)
     else:
         state.pop("nextGameDetailRetryAt", None)
     detail["gameId"] = game_id
@@ -2866,6 +2889,17 @@ def format_today_milestones(milestones: list[str]) -> str:
     return "\n".join(["오늘의 기록", *milestones])
 
 
+def send_due_kia_roster_news(client, telegram, settings, state, now) -> bool:
+    try:
+        return poll_roster_news(
+            client, telegram, settings, state, now,
+            lambda: save_state(settings.state_path, state),
+        )
+    except Exception:
+        logging.exception("KIA roster news check failed; continuing normal game polling.")
+        return False
+
+
 def schedule_kia_news_after_game(settings: Settings, state: dict[str, Any], game_id: str) -> None:
     if state.get("kiaNewsSentGameId") == game_id:
         return
@@ -3536,6 +3570,7 @@ def sleep_with_command_polling(
         except Exception:
             logging.exception("Asian Games baseball relay check failed during idle polling.")
         send_due_kia_news(client, telegram, settings, state, poll_now)
+        send_due_kia_roster_news(client, telegram, settings, state, poll_now)
         send_due_next_kia_game(client, telegram, settings, state)
         send_due_kia_highlight(client, telegram, settings, state, poll_now)
         send_due_kia_shorts(client, telegram, settings, state, poll_now)
@@ -3568,6 +3603,7 @@ def main() -> None:
             now = datetime.now(settings.timezone)
             handle_telegram_commands(client, weather_client, telegram, settings, state, current_game_id(state))
             send_due_kia_news(client, telegram, settings, state, now)
+            send_due_kia_roster_news(client, telegram, settings, state, now)
             send_due_next_kia_game(client, telegram, settings, state)
             send_due_kia_highlight(client, telegram, settings, state, now)
             send_due_kia_shorts(client, telegram, settings, state, now)
@@ -3627,6 +3663,7 @@ def main() -> None:
                     "nextAsianGamesRelayCheckAt": state.get("nextAsianGamesRelayCheckAt"),
                     "pendingRecordCommands": state.get("pendingRecordCommands"),
                     "kiaNewsGameId": state.get("kiaNewsGameId"),
+                    "stoveNews": state.get("stoveNews", {}),
                     "nextKiaNewsAt": state.get("nextKiaNewsAt"),
                     "kiaNewsSentGameId": state.get("kiaNewsSentGameId"),
                     "kiaNewsAttemptCount": state.get("kiaNewsAttemptCount"),

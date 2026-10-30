@@ -53,6 +53,8 @@ class Settings:
     pregame_poll_seconds: int = 300
     pregame_minutes: int = 60
     postgame_minutes: int = 30
+    stove_news_enabled: bool = True
+    stove_news_poll_seconds: int = 600
     naver_game_id: str | None = None
     dry_run: bool = False
     state_path: Path = BASE_DIR / "logs" / "state.json"
@@ -88,6 +90,8 @@ def get_settings() -> Settings:
         pregame_poll_seconds=env_int("PREGAME_POLL_SECONDS", 300),
         pregame_minutes=env_int("PREGAME_MINUTES", 60),
         postgame_minutes=env_int("POSTGAME_MINUTES", 30),
+        stove_news_enabled=os.getenv("STOVE_NEWS_ENABLED", "true").lower() not in {"0", "false", "no", "off"},
+        stove_news_poll_seconds=max(60, env_int("STOVE_NEWS_POLL_SECONDS", 600)),
         naver_game_id=os.getenv("NAVER_GAME_ID") or None,
         dry_run=dry_run,
     )
