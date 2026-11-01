@@ -12,6 +12,7 @@ from typing import Any
 from requests import RequestException
 
 from config import Settings, get_settings
+from season_watch import automatic_games_paused, wait_for_new_season
 from stove_news import poll_roster_news
 from kbo_api import (
     KBOPlayerCandidate,
@@ -3258,6 +3259,8 @@ def send_next_kia_game_once(
     state: dict[str, Any],
     game_date: date,
 ) -> None:
+    if automatic_games_paused(state):
+        return
     if (
         state.get("nextGameSentDate") == game_date.isoformat()
         and state.get("nextGameScheduleVersion") == 2
@@ -3598,6 +3601,12 @@ def main() -> None:
     except Exception:
         logging.exception("Failed to register Telegram commands.")
 
+    if automatic_games_paused(state):
+        logging.info(
+            "KIA offseason mode active after %s season; next schedule check %s. Roster news monitoring continues.",
+            state["seasonWatch"].get("endedSeason"), state["seasonWatch"].get("nextScheduleCheckAt"),
+        )
+
     while True:
         try:
             now = datetime.now(settings.timezone)
@@ -3611,6 +3620,15 @@ def main() -> None:
                 process_due_asian_games_baseball_relay(client, telegram, settings, state, now)
             except Exception:
                 logging.exception("Asian Games baseball relay check failed.")
+            if wait_for_new_season(
+                client, settings, state, now,
+                lambda: save_state(settings.state_path, state),
+            ):
+                sleep_seconds = seconds_until_next_due(
+                    now, 3600, state["seasonWatch"].get("nextScheduleCheckAt"),
+                )
+                sleep_with_command_polling(client, weather_client, telegram, settings, state, sleep_seconds)
+                continue
             game = get_cached_today_game(client, settings, state, now)
 
             if not game:
@@ -3664,6 +3682,7 @@ def main() -> None:
                     "pendingRecordCommands": state.get("pendingRecordCommands"),
                     "kiaNewsGameId": state.get("kiaNewsGameId"),
                     "stoveNews": state.get("stoveNews", {}),
+                    "seasonWatch": state.get("seasonWatch", {}),
                     "nextKiaNewsAt": state.get("nextKiaNewsAt"),
                     "kiaNewsSentGameId": state.get("kiaNewsSentGameId"),
                     "kiaNewsAttemptCount": state.get("kiaNewsAttemptCount"),

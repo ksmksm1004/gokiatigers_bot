@@ -77,11 +77,23 @@ def poll_roster_news(client, telegram, settings, state: dict[str, Any], now: dat
                      persist: Callable[[], None]) -> bool:
     if not settings.stove_news_enabled:
         return False
+    now = now.astimezone(settings.timezone)
     tracking = state.setdefault("stoveNews", {})
+    opening = now.replace(hour=settings.stove_news_start_hour, minute=0, second=0, microsecond=0)
+    if not settings.stove_news_start_hour <= now.hour < settings.stove_news_end_hour:
+        next_open = opening if now < opening else opening + timedelta(days=1)
+        if tracking.get("nextCheckAt") != next_open.isoformat():
+            tracking["nextCheckAt"] = next_open.isoformat()
+            persist()
+        return False
     next_check = tracking.get("nextCheckAt")
     if next_check and now < datetime.fromisoformat(next_check):
         return False
-    tracking["nextCheckAt"] = (now + timedelta(seconds=max(60, settings.stove_news_poll_seconds))).isoformat()
+    due = now + timedelta(seconds=max(60, settings.stove_news_poll_seconds))
+    closing = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=settings.stove_news_end_hour)
+    if due >= closing:
+        due = opening + timedelta(days=1)
+    tracking["nextCheckAt"] = due.isoformat()
     persist()
     articles = fetch_roster_news(client, now)
     if not tracking.get("initializedAt"):

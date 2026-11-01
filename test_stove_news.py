@@ -1,6 +1,6 @@
 import json
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 from config import Settings, get_settings
@@ -119,6 +119,64 @@ class RosterMonitorTests(unittest.TestCase):
         self.poll(1)
         self.client.section_news.assert_called_once()
 
+    def test_quiet_hours_do_not_fetch_or_send_and_schedule_next_opening(self):
+        self.poll()
+        self.client.reset_mock()
+        self.telegram.reset_mock()
+        for hour in (22, 23):
+            quiet = self.now.replace(hour=hour)
+            self.assertFalse(poll_roster_news(self.client, self.telegram, self.settings, self.state, quiet, self.persist))
+        self.client.section_news.assert_not_called()
+        self.telegram.for_chat.assert_not_called()
+        self.assertEqual(self.state['stoveNews']['nextCheckAt'], '2026-10-31T08:00:00+09:00')
+
+    def test_before_eight_schedules_today_at_eight_without_repeated_writes(self):
+        early = self.now.replace(hour=7, minute=59)
+        self.assertFalse(poll_roster_news(self.client, self.telegram, self.settings, self.state, early, self.persist))
+        self.assertFalse(poll_roster_news(self.client, self.telegram, self.settings, self.state, early, self.persist))
+        self.client.section_news.assert_not_called()
+        self.persist.assert_called_once()
+        self.assertEqual(self.state['stoveNews']['nextCheckAt'], '2026-10-30T08:00:00+09:00')
+
+    def test_next_poll_after_last_evening_check_is_next_day_eight(self):
+        last = self.now.replace(hour=21, minute=50)
+        poll_roster_news(self.client, self.telegram, self.settings, self.state, last, self.persist)
+        self.assertEqual(self.state['stoveNews']['nextCheckAt'], '2026-10-31T08:00:00+09:00')
+
+    def test_overnight_article_is_sent_at_eight_without_changing_baseline(self):
+        self.poll()
+        initialized = self.state['stoveNews']['initializedAt']
+        self.feed([self.article(minutes=11 * 60)])  # 23:00 article, after today's initialization.
+        quiet = self.now.replace(hour=23, minute=30)
+        self.assertFalse(poll_roster_news(self.client, self.telegram, self.settings, self.state, quiet, self.persist))
+        morning = (self.now + timedelta(days=1)).replace(hour=8)
+        self.assertTrue(poll_roster_news(self.client, self.telegram, self.settings, self.state, morning, self.persist))
+        self.assertEqual(self.state['stoveNews']['initializedAt'], initialized)
+        for chat in self.chats.values():
+            chat.send_message.assert_called_once()
+
+    def test_korean_hours_are_used_when_caller_supplies_utc(self):
+        now = datetime(2026, 10, 30, 23, tzinfo=timezone.utc)  # 08:00 KST on October 31.
+        poll_roster_news(self.client, self.telegram, self.settings, self.state, now, self.persist)
+        self.client.section_news.assert_called_once()
+        self.assertEqual(self.state['stoveNews']['initializedAt'], '2026-10-31T08:00:00+09:00')
+
+    def test_pending_failed_delivery_waits_for_morning(self):
+        self.poll()
+        self.chats['chat-b'].send_message.side_effect = RuntimeError('temporary failure')
+        self.feed([self.article()])
+        with self.assertLogs(level='ERROR'):
+            self.poll(11)
+        quiet = self.now.replace(hour=22)
+        poll_roster_news(self.client, self.telegram, self.settings, self.state, quiet, self.persist)
+        self.assertEqual(self.chats['chat-b'].send_message.call_count, 1)
+        self.chats['chat-b'].send_message.side_effect = None
+        self.feed([])
+        morning = (self.now + timedelta(days=1)).replace(hour=8)
+        poll_roster_news(self.client, self.telegram, self.settings, self.state, morning, self.persist)
+        self.assertEqual(self.chats['chat-b'].send_message.call_count, 2)
+        self.chats['chat-a'].send_message.assert_called_once()
+
     def test_failed_initial_fetch_does_not_baseline_and_is_rate_limited(self):
         self.client.section_news.side_effect = RuntimeError('API unavailable')
         with self.assertRaises(RuntimeError):
@@ -154,6 +212,18 @@ class RosterMonitorTests(unittest.TestCase):
             settings = get_settings()
         self.assertFalse(settings.stove_news_enabled)
         self.assertEqual(settings.stove_news_poll_seconds, 60)
+        self.assertEqual((settings.stove_news_start_hour, settings.stove_news_end_hour), (8, 22))
+
+    @patch('config.load_dotenv')
+    def test_config_hours_can_be_overridden_and_invalid_ranges_fail(self, dotenv):
+        with patch.dict('os.environ', {'DRY_RUN': 'true', 'STOVE_NEWS_START_HOUR': '9',
+                                      'STOVE_NEWS_END_HOUR': '18'}, clear=True):
+            settings = get_settings()
+            self.assertEqual((settings.stove_news_start_hour, settings.stove_news_end_hour), (9, 18))
+        with patch.dict('os.environ', {'DRY_RUN': 'true', 'STOVE_NEWS_START_HOUR': '22',
+                                      'STOVE_NEWS_END_HOUR': '8'}, clear=True):
+            with self.assertRaises(ValueError):
+                get_settings()
 
 
 if __name__ == '__main__':

@@ -55,6 +55,8 @@ class Settings:
     postgame_minutes: int = 30
     stove_news_enabled: bool = True
     stove_news_poll_seconds: int = 600
+    stove_news_start_hour: int = 8
+    stove_news_end_hour: int = 22
     naver_game_id: str | None = None
     dry_run: bool = False
     state_path: Path = BASE_DIR / "logs" / "state.json"
@@ -79,6 +81,11 @@ def get_settings() -> Settings:
     if not chat_ids and not dry_run:
         raise RuntimeError("TELEGRAM_CHAT_ID or TELEGRAM_CHAT_IDS is required. Put it in .env.")
 
+    stove_start = env_int("STOVE_NEWS_START_HOUR", 8)
+    stove_end = env_int("STOVE_NEWS_END_HOUR", 22)
+    if not 0 <= stove_start < stove_end <= 24:
+        raise ValueError("STOVE_NEWS hours must satisfy 0 <= start < end <= 24")
+
     return Settings(
         telegram_token=token,
         telegram_chat_id=chat_ids[0] if chat_ids else "",
@@ -92,6 +99,8 @@ def get_settings() -> Settings:
         postgame_minutes=env_int("POSTGAME_MINUTES", 30),
         stove_news_enabled=os.getenv("STOVE_NEWS_ENABLED", "true").lower() not in {"0", "false", "no", "off"},
         stove_news_poll_seconds=max(60, env_int("STOVE_NEWS_POLL_SECONDS", 600)),
+        stove_news_start_hour=stove_start,
+        stove_news_end_hour=stove_end,
         naver_game_id=os.getenv("NAVER_GAME_ID") or None,
         dry_run=dry_run,
     )
