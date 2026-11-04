@@ -67,7 +67,7 @@ class GameDetailRecoveryTests(unittest.TestCase):
             stack.enter_context(patch('bot.load_state', return_value=self.state))
             stack.enter_context(patch('bot.get_cached_today_game', return_value=self.game))
             for name in ('setup_logging', 'KBOPlayerClient', 'NaverWeatherClient', 'TelegramBot',
-                         'handle_telegram_commands', 'send_due_kia_news', 'send_due_kia_roster_news', 'send_due_next_kia_game',
+                         'handle_telegram_commands', 'send_due_kia_news', 'send_due_kia_roster_news', 'send_due_korean_series', 'send_due_next_kia_game',
                          'send_due_kia_highlight', 'send_due_kia_shorts', 'process_due_asian_games_baseball_relay'):
                 stack.enter_context(patch('bot.' + name))
             for name in ('should_check_game_status', 'should_poll_game', 'is_after_game_start'):
@@ -91,6 +91,50 @@ class GameDetailRecoveryTests(unittest.TestCase):
         self.assertEqual(detail['statusCode'], 'RESULT')
         self.client.preview.assert_not_called()
 
+    def test_non_kia_korean_series_skips_regular_full_relay(self):
+        game = {'gameId': '77771104SSKT02026'}
+        with ExitStack() as stack:
+            stack.enter_context(patch('bot.get_settings', return_value=self.settings))
+            stack.enter_context(patch('bot.load_state', return_value={}))
+            stack.enter_context(patch('bot.get_cached_today_game', return_value=game))
+            for name in ('setup_logging', 'NaverSportsClient', 'KBOPlayerClient', 'NaverWeatherClient',
+                         'TelegramBot', 'handle_telegram_commands', 'send_due_kia_news',
+                         'send_due_kia_roster_news', 'send_due_next_kia_game', 'send_due_kia_highlight',
+                         'send_due_kia_shorts', 'process_due_asian_games_baseball_relay'):
+                stack.enter_context(patch('bot.' + name))
+            series = stack.enter_context(patch('bot.send_due_korean_series'))
+            relay = stack.enter_context(patch('bot.process_relay'))
+            stack.enter_context(patch('bot.sleep_with_command_polling', side_effect=KeyboardInterrupt))
+            with self.assertRaises(KeyboardInterrupt):
+                main()
+            series.assert_called_once()
+            relay.assert_not_called()
+
+    def test_kia_korean_series_uses_existing_basic_and_full_relay_settings(self):
+        game = {'gameId': '77771104HTLG02026', 'awayTeamCode': 'HT', 'homeTeamCode': 'LG'}
+        for full_chats in ([], ['chat-b']):
+            with self.subTest(full_chats=full_chats), ExitStack() as stack:
+                state = dict(self.state, gameId=game['gameId'], lineupSentGameId=game['gameId'],
+                             fullRelayChatIds=full_chats)
+                stack.enter_context(patch('bot.get_settings', return_value=self.settings))
+                stack.enter_context(patch('bot.load_state', return_value=state))
+                stack.enter_context(patch('bot.get_cached_today_game', return_value=game))
+                stack.enter_context(patch('bot.get_detailed_game', return_value=dict(self.detail, **game)))
+                for name in ('setup_logging', 'NaverSportsClient', 'KBOPlayerClient', 'NaverWeatherClient',
+                             'TelegramBot', 'handle_telegram_commands', 'send_due_kia_news',
+                             'send_due_kia_roster_news', 'send_due_next_kia_game', 'send_due_kia_highlight',
+                             'send_due_kia_shorts', 'process_due_asian_games_baseball_relay', 'send_due_korean_series'):
+                    stack.enter_context(patch('bot.' + name))
+                for name in ('should_check_game_status', 'should_poll_game', 'is_after_game_start'):
+                    stack.enter_context(patch('bot.' + name, return_value=True))
+                for name in ('should_check_preview', 'is_before_game_start'):
+                    stack.enter_context(patch('bot.' + name, return_value=False))
+                relay = stack.enter_context(patch('bot.process_relay', side_effect=KeyboardInterrupt))
+                with self.assertRaises(KeyboardInterrupt):
+                    main()
+                relay.assert_called_once()
+                self.assertEqual(relay.call_args.args[3]['fullRelayChatIds'], full_chats)
+
     def test_new_game_keeps_roster_news_delivery_history(self):
         tracking = {'initializedAt': '2026-10-30T12:00:00+09:00', 'seen': {'109/1': '2026-10-30T12:00:00+09:00'}}
         self.state.update(gameId='yesterday', stoveNews=tracking)
@@ -101,7 +145,7 @@ class GameDetailRecoveryTests(unittest.TestCase):
             stack.enter_context(patch('bot.load_state', return_value=self.state))
             stack.enter_context(patch('bot.get_cached_today_game', return_value=self.game))
             for name in ('setup_logging', 'KBOPlayerClient', 'NaverWeatherClient', 'TelegramBot',
-                         'handle_telegram_commands', 'send_due_kia_news', 'send_due_kia_roster_news',
+                         'handle_telegram_commands', 'send_due_kia_news', 'send_due_kia_roster_news', 'send_due_korean_series',
                          'send_due_next_kia_game', 'send_due_kia_highlight', 'send_due_kia_shorts',
                          'process_due_asian_games_baseball_relay', 'send_lineup_once'):
                 stack.enter_context(patch('bot.' + name))

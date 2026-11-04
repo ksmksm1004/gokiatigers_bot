@@ -108,11 +108,13 @@ class SeasonWatchTests(unittest.TestCase):
                          'process_due_asian_games_baseball_relay'):
                 stack.enter_context(patch('bot.' + name))
             roster = stack.enter_context(patch('bot.send_due_kia_roster_news'))
+            series = stack.enter_context(patch('bot.send_due_korean_series'))
             games = stack.enter_context(patch('bot.get_cached_today_game'))
             stack.enter_context(patch('bot.sleep_with_command_polling', side_effect=KeyboardInterrupt))
             with self.assertRaises(KeyboardInterrupt):
                 main()
             roster.assert_called_once()
+            series.assert_called_once()
             games.assert_not_called()
 
 

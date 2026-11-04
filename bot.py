@@ -13,6 +13,7 @@ from requests import RequestException
 
 from config import Settings, get_settings
 from season_watch import automatic_games_paused, wait_for_new_season
+from korean_series import is_score_only_series_game, poll_korean_series
 from stove_news import poll_roster_news
 from kbo_api import (
     KBOPlayerCandidate,
@@ -2890,6 +2891,14 @@ def format_today_milestones(milestones: list[str]) -> str:
     return "\n".join(["오늘의 기록", *milestones])
 
 
+def send_due_korean_series(client, telegram, settings, state, now) -> None:
+    try:
+        poll_korean_series(client, telegram, settings, state, now,
+                           lambda: save_state(settings.state_path, state))
+    except Exception:
+        logging.exception("Korean Series check failed; continuing other bot features.")
+
+
 def send_due_kia_roster_news(client, telegram, settings, state, now) -> bool:
     try:
         return poll_roster_news(
@@ -3574,6 +3583,7 @@ def sleep_with_command_polling(
             logging.exception("Asian Games baseball relay check failed during idle polling.")
         send_due_kia_news(client, telegram, settings, state, poll_now)
         send_due_kia_roster_news(client, telegram, settings, state, poll_now)
+        send_due_korean_series(client, telegram, settings, state, poll_now)
         send_due_next_kia_game(client, telegram, settings, state)
         send_due_kia_highlight(client, telegram, settings, state, poll_now)
         send_due_kia_shorts(client, telegram, settings, state, poll_now)
@@ -3613,6 +3623,7 @@ def main() -> None:
             handle_telegram_commands(client, weather_client, telegram, settings, state, current_game_id(state))
             send_due_kia_news(client, telegram, settings, state, now)
             send_due_kia_roster_news(client, telegram, settings, state, now)
+            send_due_korean_series(client, telegram, settings, state, now)
             send_due_next_kia_game(client, telegram, settings, state)
             send_due_kia_highlight(client, telegram, settings, state, now)
             send_due_kia_shorts(client, telegram, settings, state, now)
@@ -3631,6 +3642,11 @@ def main() -> None:
                 continue
             game = get_cached_today_game(client, settings, state, now)
 
+            if game and is_score_only_series_game(game, settings.team_code):
+                # KIA games retain their normal basic/full relay modes.
+                sleep_with_command_polling(client, weather_client, telegram, settings, state, 60)
+                continue
+
             if not game:
                 send_daily_rankings_if_all_games_done(client, telegram, settings, state, now)
                 sleep_seconds = seconds_until_next_due(
@@ -3647,6 +3663,9 @@ def main() -> None:
                 continue
 
             detailed_game = get_detailed_game(client, settings, state, game)
+            if is_score_only_series_game(detailed_game, settings.team_code):
+                sleep_with_command_polling(client, weather_client, telegram, settings, state, 60)
+                continue
             summary = parse_game_summary(detailed_game, settings.naver_game_id)
             if not summary.game_id:
                 logging.warning("KIA game found but gameId is missing: %s", game)
@@ -3683,6 +3702,7 @@ def main() -> None:
                     "kiaNewsGameId": state.get("kiaNewsGameId"),
                     "stoveNews": state.get("stoveNews", {}),
                     "seasonWatch": state.get("seasonWatch", {}),
+                    "koreanSeriesWatch": state.get("koreanSeriesWatch", {}),
                     "nextKiaNewsAt": state.get("nextKiaNewsAt"),
                     "kiaNewsSentGameId": state.get("kiaNewsSentGameId"),
                     "kiaNewsAttemptCount": state.get("kiaNewsAttemptCount"),
